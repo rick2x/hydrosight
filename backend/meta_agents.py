@@ -1,6 +1,9 @@
+import logging
 from dotenv import load_dotenv
 
 load_dotenv()
+
+logger = logging.getLogger("hydrosight.perception")
 
 import base64
 from concurrent.futures import ThreadPoolExecutor
@@ -675,7 +678,7 @@ def _encode_image_b64(image_path: Path) -> str:
     return f"data:image/jpeg;base64,{base64.b64encode(data).decode('ascii')}"
 
 
-def _query_single_sam3_concept(b64_url: str, concept: str) -> List[SAMMaskObject]:
+def _query_single_sam3_concept(b64_url: str, concept: str) -> Tuple[List[SAMMaskObject], bool]:
     """
     Queries Meta `sam-3.1` (`POST /v1/responses`) for a single concept string
     and parses all `<|box;x1=...;y1=...;x2=...;y2=...;w=...;h=...|>` detections.
@@ -706,13 +709,15 @@ def _query_single_sam3_concept(b64_url: str, concept: str) -> List[SAMMaskObject
                 json=req_body,
             )
             if resp.status_code != 200:
-                return []
+                logger.warning(f"SAM 3.1: concept '{concept}' query returned HTTP {resp.status_code}: {resp.text[:200]}")
+                return [], False
             output_list = resp.json().get("output", [])
             if not output_list:
-                return []
+                logger.warning(f"SAM 3.1: concept '{concept}' returned empty output: {resp.text[:200]}")
+                return [], True
             content_list = output_list[0].get("content", [])
             if not content_list:
-                return []
+                return [], True
             raw_text = content_list[0].get("text", "")
             matches = SAM_BOX_PATTERN.findall(raw_text)
             for idx, (x1_s, y1_s, x2_s, y2_s, w_s, h_s) in enumerate(matches):
@@ -723,8 +728,8 @@ def _query_single_sam3_concept(b64_url: str, concept: str) -> List[SAMMaskObject
                 u2 = round(max(0.0, min(1.0, float(x2_s) / w_f)), 3)
                 v2 = round(max(0.0, min(1.0, float(y2_s) / h_f)), 3)
                 box_area = (u2 - u1) * (v2 - v1)
-                # Filter out tiny background artifacts (<1.2% of image area)
-                if box_area < 0.012:
+                # Filter out tiny background noise (<0.3% of image area, preserving vertical utility poles and distant people)
+                if box_area < 0.003:
                     continue
 
                 if display_concept == "floodwater":
@@ -752,15 +757,17 @@ def _query_single_sam3_concept(b64_url: str, concept: str) -> List[SAMMaskObject
                         standard_height_m=STANDARD_HEIGHTS_M.get(display_concept, 1.5),
                     )
                 )
-    except Exception:
-        return []
+    except Exception as e:
+        logger.error(f"SAM 3.1: Exception querying concept '{concept}': {e}", exc_info=True)
+        return [], False
 
     # Sort by bounding box area descending and keep top detections
     results.sort(
         key=lambda m: (m.bbox_norm[2] - m.bbox_norm[0]) * (m.bbox_norm[3] - m.bbox_norm[1]),
         reverse=True,
     )
-    return results[:1] if display_concept == "floodwater" else results[:3]
+    final_res = results[:1] if display_concept == "floodwater" else results[:3]
+    return final_res, True
 
 
 def call_sam3_segmentation(
@@ -768,7 +775,7 @@ def call_sam3_segmentation(
     prompts: List[str],
     scenario_id: str = "kasiglahan_village",
     is_custom_upload: bool = False,
-) -> Tuple[List[SAMMaskObject], bool]:
+) -> Tuple[List[SAMMaskObject], bool, bool]:
     """
     Calls Meta SAM 3.1 (`sam-3.1`) via POST /v1/responses with SHA256 disk caching.
     Parses real `<|box;x1=...;y1=...;x2=...;y2=...;w=...;h=...|>` coordinates from SAM 3.1.
@@ -783,7 +790,8 @@ def call_sam3_segmentation(
     }
     cached = _read_cache(cache_key_payload)
     if cached is not None:
-        return [SAMMaskObject(**m) for m in cached["masks"]], True
+        logger.info(f"SAM 3.1: Cache hit for image_hash={img_hash} (scenario={scenario_id})")
+        return [SAMMaskObject(**m) for m in cached["masks"]], False, True
 
     preset = SCENARIO_PRESETS.get(scenario_id, SCENARIO_PRESETS["kasiglahan_village"])
     # Run live SAM 3.1 perception across key flood concepts for all photos (preset or upload)
@@ -791,12 +799,19 @@ def call_sam3_segmentation(
     concepts_to_query = ["water", "person", "car", "tricycle", "gate", "utility pole"]
     detected_masks: List[SAMMaskObject] = []
 
+    any_api_ok = False
     with ThreadPoolExecutor(max_workers=6) as pool:
         futures = [pool.submit(_query_single_sam3_concept, b64_url, c) for c in concepts_to_query]
         for fut in futures:
-            detected_masks.extend(fut.result())
+            try:
+                res_masks, ok = fut.result()
+                if ok:
+                    any_api_ok = True
+                detected_masks.extend(res_masks)
+            except Exception as e:
+                logger.error(f"Error in SAM concept future: {e}")
 
-    if detected_masks:
+    if any_api_ok:
         _write_cache(
             cache_key_payload,
             {
@@ -804,14 +819,16 @@ def call_sam3_segmentation(
                 "source": "sam-3.1-live-parsed",
             },
         )
-        return detected_masks, False
+        logger.info(f"SAM 3.1: Live parsed {len(detected_masks)} masks for {image_path.name}")
+        return detected_masks, False, False
 
     # Fallback only if offline / rate-limited
     if is_custom_upload:
         # Never return benchmark scenario masks (e.g. Kasiglahan Village) for custom operator photos!
-        return [], True
+        logger.warning(f"SAM 3.1: Live API failed for custom upload {image_path.name}")
+        return [], True, False
     fallback_masks = list(preset.sam_masks)
-    return fallback_masks, True
+    return fallback_masks, True, False
 
 
 def call_muse_spark_visual_gauge(
@@ -819,7 +836,7 @@ def call_muse_spark_visual_gauge(
     masks: List[SAMMaskObject],
     scenario_id: str = "kasiglahan_village",
     is_custom_upload: bool = False,
-) -> Tuple[VisualGaugeResult, bool]:
+) -> Tuple[VisualGaugeResult, bool, bool]:
     """
     Calls Meta Muse Spark 1.3 (`muse-spark-1.3`) with multimodal image input +
     parsed SAM 3.1 bounding boxes (`response_format={"type": "json_object"}`).
@@ -835,7 +852,8 @@ def call_muse_spark_visual_gauge(
     }
     cached = _read_cache(cache_key_payload)
     if cached is not None:
-        return VisualGaugeResult(**cached["visual_gauge"]), True
+        logger.info(f"Muse Spark 1.3: Cache hit for image_hash={img_hash} (scenario={scenario_id})")
+        return VisualGaugeResult(**cached["visual_gauge"]), False, True
 
     # Run live Muse Spark 1.3 visual gauge for all photos (preset or upload)
     system_prompt = (
@@ -906,9 +924,12 @@ def call_muse_spark_visual_gauge(
                     hydrological_reasoning=str(parsed.get("hydrological_reasoning", "Analyzed via SAM 3.1 + Muse Spark 1.3.")),
                 )
                 _write_cache(cache_key_payload, {"visual_gauge": gauge.model_dump(), "source": "muse-spark-1.3-live"})
-                return gauge, False
-    except Exception:
-        pass
+                logger.info(f"Muse Spark 1.3: Live visual gauge resolved for {image_path.name}: depth={gauge.estimated_water_depth_m}m, conf={gauge.confidence_score}")
+                return gauge, False, False
+            else:
+                logger.warning(f"Muse Spark 1.3 returned HTTP {resp.status_code}: {resp.text[:300]}")
+    except Exception as e:
+        logger.error(f"Muse Spark 1.3 exception: {e}", exc_info=True)
 
     if is_custom_upload:
         generic_gauge = VisualGaugeResult(
@@ -922,9 +943,9 @@ def call_muse_spark_visual_gauge(
             confidence_score=0.80,
             hydrological_reasoning="Field photo loaded. Click the visible waterline on the photo to calibrate ray casting and depth.",
         )
-        return generic_gauge, True
+        return generic_gauge, True, False
 
-    return preset.visual_gauge, True
+    return preset.visual_gauge, True, False
 
 
 def analyze_water_level_with_sam3(
@@ -946,13 +967,14 @@ def analyze_water_level_with_sam3(
     photo_url = f"/static/photos/{img_path.name}" if is_custom else preset.photo_url
 
     prompts_used = list(PRIMARY_SAM_PROMPTS)
-    masks, sam_is_fallback = call_sam3_segmentation(
+    masks, sam_is_fallback, sam_from_cache = call_sam3_segmentation(
         img_path, prompts_used, scenario_id=("live_operator" if is_custom else preset.id), is_custom_upload=is_custom
     )
-    gauge, spark_is_fallback = call_muse_spark_visual_gauge(
+    gauge, spark_is_fallback, spark_from_cache = call_muse_spark_visual_gauge(
         img_path, masks, scenario_id=("live_operator" if is_custom else preset.id), is_custom_upload=is_custom
     )
     is_fallback = bool(sam_is_fallback or spark_is_fallback)
+    is_cached = bool(sam_from_cache and spark_from_cache)
 
     # Sync submerged_ratio onto non-water SAM 3.1 masks from Muse Spark 1.3 gauge
     for m in masks:
@@ -965,22 +987,28 @@ def analyze_water_level_with_sam3(
         self_check_triggered = True
         prompts_used.extend(FALLBACK_SAM_PROMPTS)
         # Execute real live re-prompt with fallback scale reference concepts
-        fallback_masks, _ = call_sam3_segmentation(
-            img_path, FALLBACK_SAM_PROMPTS, scenario_id=f"{preset.id}_fallback", is_custom_upload=True
+        fallback_masks, fb_is_fallback, fb_from_cache = call_sam3_segmentation(
+            img_path, FALLBACK_SAM_PROMPTS, scenario_id=f"{'live_operator' if is_custom else preset.id}_fallback", is_custom_upload=is_custom
         )
         if fallback_masks:
             existing_ids = {m.id for m in masks}
             for fm in fallback_masks:
                 if fm.id not in existing_ids:
                     masks.append(fm)
-            gauge, _ = call_muse_spark_visual_gauge(
-                img_path, masks, scenario_id=f"{preset.id}_fallback", is_custom_upload=True
+            gauge, sp_is_fallback, sp_from_cache = call_muse_spark_visual_gauge(
+                img_path, masks, scenario_id=f"{'live_operator' if is_custom else preset.id}_fallback", is_custom_upload=is_custom
             )
             for m in masks:
                 if m.concept != "floodwater":
                     m.submerged_ratio = gauge.submerged_ratio
 
-    mode = "calibrated_baseline_fallback" if is_fallback else ("cached" if (sam_is_fallback is False and spark_is_fallback is False) else "live_inference")
+    if is_fallback:
+        mode = "calibrated_baseline_fallback"
+    elif is_cached:
+        mode = "cached"
+    else:
+        mode = "live_inference"
+
     return AnalyzePhotoResponse(
         scenario_id=("live_operator" if is_custom else preset.id),
         photo_url=photo_url,
@@ -990,7 +1018,7 @@ def analyze_water_level_with_sam3(
         initial_confidence_score=initial_conf if self_check_triggered else None,
         prompts_used=prompts_used,
         model_chain=["sam-3.1", "muse-spark-1.3"],
-        cached=bool(not is_fallback and not is_custom),
+        cached=is_cached,
         fallback_used=is_fallback,
         execution_mode=mode,
         is_custom_upload=is_custom,

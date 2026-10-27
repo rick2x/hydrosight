@@ -802,11 +802,16 @@ export default function App() {
             >
               <span>← Back to Step 2: 3D Mapping</span>
             </button>
-            <span style={{ color: "var(--muted)", fontSize: "13px" }}>
-              {triageData
-                ? `Corridor active: ${Math.round(triageData.route_distance_m)} m to ${triageData.evacuation_center_name || "Evacuation Center"}. ${triageData.dispatch_tickets?.length || 0} tickets queued.`
-                : "Computing autonomous triage..."}
-            </span>
+            <div style={{ display: "flex", flexDirection: "column", gap: "2px" }}>
+              <span style={{ color: "var(--text)", fontSize: "12.5px", fontWeight: 500 }}>
+                {triageData
+                  ? `Corridor active: ${Math.round(triageData.route_distance_m)} m to ${triageData.evacuation_center_name || "Evacuation Center"} · ${triageData.dispatch_tickets?.length || 0} tickets queued`
+                  : "Computing autonomous triage..."}
+              </span>
+              <span style={{ color: "var(--muted)", fontSize: "11px" }}>
+                Screening-level emergency triage derived from DEM ground-vs-WSE differentials, not an official flood map.
+              </span>
+            </div>
             <a
               href={floodProjection ? `/api/v1/download-shp/${floodProjection?.run_id || "live_incident"}` : "#"}
               download={floodProjection ? `rodriguez_flood_extent_${floodProjection?.run_id || "live_incident"}.zip` : undefined}

@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { AlertTriangle, School, HeartPulse, Landmark, Check, Send } from "lucide-react";
+import { AlertTriangle, School, HeartPulse, Landmark, Check, Send, Info } from "lucide-react";
 
 export default function TriageCopilot({ triageData, floodProjection, projectionLoading, triageLoading }) {
   const [dispatchedIds, setDispatchedIds] = useState({});
@@ -215,6 +215,28 @@ export default function TriageCopilot({ triageData, floodProjection, projectionL
               )}
             </tbody>
           </table>
+        </div>
+
+        {/* Operational Disclaimer: Screening-Level Emergency Triage */}
+        <div
+          style={{
+            marginTop: "10px",
+            padding: "8px 12px",
+            borderRadius: "6px",
+            backgroundColor: "var(--surface)",
+            border: "1px solid var(--border)",
+            fontSize: "12px",
+            color: "var(--muted)",
+            display: "flex",
+            alignItems: "center",
+            gap: "8px",
+            lineHeight: 1.4,
+          }}
+        >
+          <Info size={14} color="var(--accent)" style={{ flexShrink: 0 }} />
+          <span>
+            <strong style={{ color: "var(--text)" }}>Operational Notice:</strong> Screening-level emergency triage derived from 10 m DEM ground-vs-WSE elevation differentials, not an official regulatory flood map.
+          </span>
         </div>
       </section>
     </div>
