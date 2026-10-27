@@ -1206,7 +1206,7 @@ export default function MapViewcone({
             Camera @ 0m (in {waterDepth.toFixed(2)}m water)
           </text>
           <text x="364" y="46" fontSize="11" fill="#0e7490" fontFamily="var(--font)" fontWeight="600">
-            Target @ {cameraParams.est_distance_m}m · WSE {wse.toFixed(2)}m
+            Target @ ~{cameraParams.est_distance_m}m (model est.) · WSE {wse.toFixed(2)}m
           </text>
         </svg>
 

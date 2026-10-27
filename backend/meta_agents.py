@@ -2215,8 +2215,9 @@ def simulate_typhoon_surge_with_muse_image(
 
     current_wse_m = round(surge_proj["ground_dem_m"] + current_depth_m, 2)
     surge_wse_m = surge_proj["water_surface_elev_m"]
-    generated_file = PHOTOS_DIR / f"{preset.id}_muse_surge.jpg"
-    surge_photo_url = f"/static/photos/{preset.id}_muse_surge.jpg" if generated_file.exists() else f"/static/photos/{preset.id}_surge.jpg"
+    generated_file = PHOTOS_DIR / f"{preset.id}_muse_surge_{projected_depth_m:.2f}m.jpg"
+    surge_photo_url = f"/static/photos/{generated_file.name}" if generated_file.exists() else f"/static/photos/{preset.id}_surge.jpg"
+    image_generated_by_model = False
 
     cache_payload = {
         "endpoint": "muse-image-1.0/simulate-surge",
@@ -2237,12 +2238,13 @@ def simulate_typhoon_surge_with_muse_image(
             alert_headline=cached["alert_headline"],
             sms_broadcast_text=cached["sms_broadcast_text"],
             additional_buildings_at_risk=surge_proj["inundated_structures"]["critical_depth_count"],
-            model_used="muse-image-1.0 (Meta AI)" if generated_file.exists() else "DEM-Calibrated Hydro-Spatial Surge Composite (+1.5m WSE)",
+            model_used="muse-image-1.0 (Meta AI)" if cached.get("image_generated_by_model") else "Illustrative PIL composite of the photo (not AI-generated)",
+            forecast_image_source="muse_image_generated" if cached.get("image_generated_by_model") else "pil_composite",
             surge_flood_geojson=surge_proj["flood_geojson"],
             cached=True,
         )
 
-    if not generated_file.exists():
+    if not generated_file.exists() and META_API_KEY:
         try:
             prompt_text = (
                 f"Photorealistic street-level disaster documentary photograph of {preset.name} in Rodriguez, "
@@ -2270,11 +2272,14 @@ def simulate_typhoon_surge_with_muse_image(
                     if data_list and "b64_json" in data_list[0]:
                         img_bytes = base64.b64decode(data_list[0]["b64_json"])
                         generated_file.write_bytes(img_bytes)
-                        surge_photo_url = f"/static/photos/{preset.id}_muse_surge.jpg"
+                        surge_photo_url = f"/static/photos/{generated_file.name}"
+                        image_generated_by_model = True
         except Exception:
             pass
-    else:
-        surge_photo_url = f"/static/photos/{preset.id}_muse_surge.jpg"
+    elif generated_file.exists():
+        # File for THIS projected depth exists from an earlier generation
+        surge_photo_url = f"/static/photos/{generated_file.name}"
+        image_generated_by_model = True
 
     resolved_brgy = surge_proj["inundated_structures"]["barangay"]
     alert_headline = (
@@ -2294,6 +2299,7 @@ def simulate_typhoon_surge_with_muse_image(
             "surge_forecast_image_url": surge_photo_url,
             "alert_headline": alert_headline,
             "sms_broadcast_text": sms_text,
+            "image_generated_by_model": image_generated_by_model,
         },
     )
 
@@ -2309,7 +2315,8 @@ def simulate_typhoon_surge_with_muse_image(
         alert_headline=alert_headline,
         sms_broadcast_text=sms_text,
         additional_buildings_at_risk=surge_proj["inundated_structures"]["critical_depth_count"],
-        model_used="muse-image-1.0 (Meta AI)" if generated_file.exists() else "DEM-Calibrated Hydro-Spatial Surge Composite (+1.5m WSE)",
+        model_used="muse-image-1.0 (Meta AI)" if image_generated_by_model else "Illustrative PIL composite of the photo (not AI-generated)",
+        forecast_image_source="muse_image_generated" if image_generated_by_model else "pil_composite",
         surge_flood_geojson=surge_proj["flood_geojson"],
         cached=False,
     )
