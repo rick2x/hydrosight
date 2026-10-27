@@ -217,55 +217,11 @@ def _clamp_utm_to_dem(src: rasterio.DatasetReader, x: float, y: float, margin: f
     return clamped_x, clamped_y
 
 
-def _bare_earth_filter_3x3(arr: np.ndarray, nodata: Optional[float] = -9999.0) -> np.ndarray:
+def _mask_to_zone_geom(mask: np.ndarray, win_transform: Any) -> Any:
     """
-    Strips single-pixel SRTM radar rooftop/tree-canopy spikes using a 3x3 local minimum
-    filter so floodwater follows actual bare-earth street elevation.
-    """
-    if arr.ndim != 2 or arr.shape[0] < 3 or arr.shape[1] < 3:
-        return arr
-    clean = np.where((arr == nodata) | (arr < -100), np.nan, arr.astype(np.float32))
-    padded = np.pad(clean, 1, mode="edge")
-    neighbors = [
-        padded[0:-2, 0:-2],
-        padded[0:-2, 1:-1],
-        padded[0:-2, 2:],
-        padded[1:-1, 0:-2],
-        padded[1:-1, 1:-1],
-        padded[1:-1, 2:],
-        padded[2:, 0:-2],
-        padded[2:, 1:-1],
-        padded[2:, 2:],
-    ]
-    stacked = np.stack(neighbors, axis=0)
-    # 25th percentile across 3x3 neighborhood approximates bare-earth street grade
-    bare = np.nanpercentile(stacked, 25, axis=0)
-    return np.where(np.isnan(bare), arr, bare).astype(np.float32)
-
-
-def _box_blur_2d(arr: np.ndarray, radius: int = 4) -> np.ndarray:
-    """Fast 2D moving average filter to extract macro valley slope on the 10m DEM."""
-    if arr.ndim != 2 or radius < 1:
-        return arr.astype(np.float32)
-    padded = np.pad(arr.astype(np.float32), radius, mode="edge")
-    k = 2 * radius + 1
-    acc = np.zeros_like(arr, dtype=np.float32)
-    for dy in range(k):
-        for dx in range(k):
-            acc += padded[dy : dy + arr.shape[0], dx : dx + arr.shape[1]]
-    return acc / float(k * k)
-
-
-def _mask_to_clean_zone_geom(
-    mask: np.ndarray,
-    win_transform: Any,
-    corridor_geom: Any,
-    corridor_probe: Any,
-    include_corridor: bool = True,
-) -> Any:
-    """
-    Vectorizes a binary DEM depth threshold mask into a clean, topologically valid
-    polygon connected to the camera-to-target corridor, removing SRTM rooftop holes.
+    Vectorizes a binary DEM depth-threshold mask exactly as computed: no corridor
+    is added, no holes are filled, and no buffer smoothing is applied, so the
+    returned geometry is the DEM-derived flood extent and nothing else.
     """
     raw_polys = []
     if np.any(mask):
@@ -274,60 +230,83 @@ def _mask_to_clean_zone_geom(
                 poly_geom = shape(geom).buffer(0)
                 if not poly_geom.is_empty and poly_geom.area >= 20.0:
                     raw_polys.append(poly_geom)
-
-    if include_corridor and corridor_geom is not None and not corridor_geom.is_empty:
-        raw_polys.append(corridor_geom)
-
     if not raw_polys:
         return Polygon()
-
-    connected = [p for p in raw_polys if p.intersects(corridor_probe)]
-    if not connected:
-        connected = raw_polys
-
-    merged = unary_union(connected)
-    cleaned_parts = []
-    parts_iter = merged.geoms if isinstance(merged, MultiPolygon) else [merged]
-    for part in parts_iter:
-        if isinstance(part, Polygon) and not part.is_empty:
-            # Fill interior holes smaller than 7500 sqm or any hole inside the camera viewcone
-            kept_holes = [
-                ring
-                for ring in part.interiors
-                if Polygon(ring).area > 7500.0 and not Polygon(ring).intersects(corridor_probe)
-            ]
-            cleaned_parts.append(Polygon(part.exterior, kept_holes))
-
-    if not cleaned_parts:
-        return Polygon()
-
-    smoothed = unary_union(cleaned_parts).buffer(4.5).buffer(-3.0).simplify(1.2, preserve_topology=True)
-    return smoothed.buffer(0) if not smoothed.is_empty else Polygon()
+    merged = unary_union(raw_polys)
+    return merged.buffer(0) if not merged.is_empty else Polygon()
 
 
 def _sample_dem_elevation(src: rasterio.DatasetReader, x: float, y: float) -> float:
-    """Safely sample bare-earth street elevation in meters from an open DEM dataset in EPSG:32651."""
+    """
+    Bilinear interpolation of the DEM at the exact point (x, y) in EPSG:32651.
+    No neighbourhood percentile/minimum is taken: the returned value is the DEM
+    surface at that location, so depths derived from it are not biased low.
+    Falls back to the nearest valid cell only when the point itself is nodata.
+    """
     cx, cy = _clamp_utm_to_dem(src, x, y, margin=20.0)
-    full_win = Window(0, 0, src.width, src.height)
-    win30 = from_bounds(cx - 18, cy - 18, cx + 18, cy + 18, src.transform).intersection(full_win)
-    if win30.width >= 1 and win30.height >= 1:
-        arr30 = src.read(1, window=win30)
-        valid30 = arr30[(arr30 != src.nodata) & (arr30 > -100)]
-        if valid30.size > 0:
-            return float(np.percentile(valid30, 25))
+    inv = ~src.transform
+    col_f, row_f = inv * (cx, cy)
+    # Convert corner-based pixel coordinates to pixel-centre coordinates
+    u = float(col_f) - 0.5
+    v = float(row_f) - 0.5
+    c0 = int(math.floor(u))
+    r0 = int(math.floor(v))
+    fu = u - c0
+    fv = v - r0
+    win = Window(c0, r0, 2, 2).intersection(Window(0, 0, src.width, src.height))
+    if win.width >= 1 and win.height >= 1:
+        arr = src.read(1, window=win).astype(np.float64)
+        off_c = int(win.col_off) - c0
+        off_r = int(win.row_off) - r0
+        total = 0.0
+        wsum = 0.0
+        for dr in range(arr.shape[0]):
+            for dc in range(arr.shape[1]):
+                val = float(arr[dr, dc])
+                if src.nodata is not None and math.isclose(val, src.nodata):
+                    continue
+                if val < -100:
+                    continue
+                w = (1.0 - abs((dc + off_c) - fu)) * (1.0 - abs((dr + off_r) - fv))
+                if w > 0:
+                    total += w * val
+                    wsum += w
+        if wsum > 0:
+            return float(total / wsum)
     try:
         val = float(list(src.sample([(cx, cy)]))[0][0])
     except Exception:
         val = -9999.0
     if src.nodata is not None and (math.isclose(val, src.nodata) or val < -100):
-        win = from_bounds(cx - 150, cy - 150, cx + 150, cy + 150, src.transform).intersection(full_win)
-        if win.width >= 1 and win.height >= 1:
-            arr = src.read(1, window=win)
-            valid = arr[(arr != src.nodata) & (arr > -100)]
+        full_win = Window(0, 0, src.width, src.height)
+        win2 = from_bounds(cx - 150, cy - 150, cx + 150, cy + 150, src.transform).intersection(full_win)
+        if win2.width >= 1 and win2.height >= 1:
+            arr2 = src.read(1, window=win2)
+            valid = arr2[(arr2 != src.nodata) & (arr2 > -100)]
             if valid.size > 0:
                 return float(valid.mean())
         return 32.0
     return val
+
+
+def _dem_uncertainty_m(src: rasterio.DatasetReader, x: float, y: float, floor_m: float = 0.5) -> float:
+    """
+    Published vertical uncertainty band (plus/minus, meters) for elevations at a
+    point: the std-dev of the raw DEM in a 30 m window around the point (local
+    terrain/sensor variability) combined in quadrature with a fixed floor for
+    the 30 m-native DSM that was resampled to 10 m. This is an uncertainty
+    estimate, not a correction: sampled elevations themselves are unchanged.
+    """
+    cx, cy = _clamp_utm_to_dem(src, x, y, margin=20.0)
+    full_win = Window(0, 0, src.width, src.height)
+    win = from_bounds(cx - 15, cy - 15, cx + 15, cy + 15, src.transform).intersection(full_win)
+    local_std = 0.0
+    if win.width >= 1 and win.height >= 1:
+        arr = src.read(1, window=win).astype(np.float64)
+        valid = arr[(arr != src.nodata) & (arr > -100)]
+        if valid.size >= 4:
+            local_std = float(np.std(valid))
+    return round(math.sqrt(floor_m * floor_m + local_std * local_std), 2)
 
 
 def load_evacuation_centers() -> List[Dict[str, Any]]:
@@ -699,6 +678,15 @@ def project_photo_to_flood_shapefile(
 
     polys = []
     profile_points: List[Dict[str, float]] = []
+    wse = 0.0
+    wse_camera_anchored = 0.0
+    dem_uncertainty = 0.5
+    wse_low = 0.0
+    wse_high = 0.0
+    flood_area_band: Dict[str, float] = {}
+    tier_geoms: Dict[str, Any] = {"low": Polygon(), "medium": Polygon(), "critical": Polygon()}
+    tier_stats: Dict[str, Dict[str, float]] = {}
+    corridor_geom = Polygon()
     with rasterio.open(resolved_dem) as src:
         b_left, b_bottom, b_right, b_top = src.bounds
         # Explicit validation: Reject coordinates far outside the Rodriguez pilot DEM (e.g. lat/lon 0, 0)
@@ -713,50 +701,27 @@ def project_photo_to_flood_shapefile(
         ground_elev = _sample_dem_elevation(src, target_x, target_y)
         cam_ground_elev = _sample_dem_elevation(src, cam_x, cam_y)
 
-        # Solution B: Ground-truth observer calibration & flooded street corridor reconciliation
-        # The camera operator is the ground-truth physical witness standing at (cam_x, cam_y).
-        # Standing water depth at the camera operator cannot exceed observed flood depth or human physical limits.
-        delta_z = ground_elev - cam_ground_elev
-        max_street_grade_m = max(0.40, est_distance_m * 0.025)
+        # SPEC.md Section 4.2: the flood extent is anchored at the TARGET.
+        # WSE = Z_DEM(target) + h_w. The camera-anchored variant is computed
+        # only as a labelled diagnostic and never drives the extent.
+        wse = ground_elev + water_depth_m
+        wse_camera_anchored = cam_ground_elev + water_depth_m
+        dem_uncertainty = _dem_uncertainty_m(src, target_x, target_y)
+        wse_low = wse - dem_uncertainty
+        wse_high = wse + dem_uncertainty
 
-        if abs(delta_z) > max_street_grade_m:
-            if delta_z > 0:
-                # Target DEM has an uphill artifact (e.g. tree/roof bounce or DEM step error).
-                # Anchor WSE to camera observer ground truth so camera depth matches the observed scene:
-                wse = cam_ground_elev + water_depth_m
-                cam_street_elev = cam_ground_elev
-                eff_target_z = min(ground_elev, wse - max(0.15, min(water_depth_m * 0.85, 0.45)))
-            else:
-                # Camera DEM is higher than target; anchor to target waterline and ensure camera is at water edge:
-                wse = ground_elev + water_depth_m
-                cam_street_elev = min(cam_ground_elev, wse - max(0.15, water_depth_m * 0.5))
-                eff_target_z = ground_elev
-        else:
-            # Elevations are consistent; anchor WSE to camera observer ground truth
-            wse = cam_ground_elev + water_depth_m
-            cam_street_elev = cam_ground_elev
-            eff_target_z = ground_elev
-
-        # Sample real DEM elevation profile along the camera ray from 0m (Camera) to 1.6x target distance
+        # Real DEM elevation profile along the camera ray (point samples only)
         for frac in [0.0, 0.25, 0.50, 0.75, 1.0, 1.30, 1.60]:
             d_m = round(est_distance_m * frac, 1)
             px = cam_x + d_m * math.sin(target_bearing_rad)
             py = cam_y + d_m * math.cos(target_bearing_rad)
             raw_z = _sample_dem_elevation(src, px, py)
-            if frac <= 1.0:
-                # Smooth street transition from camera observer to target
-                interp_street = cam_street_elev + frac * (eff_target_z - cam_street_elev)
-                eff_z = min(raw_z, interp_street)
-            elif frac <= 1.3:
-                eff_z = min(raw_z, eff_target_z + (frac - 1.0) * 0.35)
-            else:
-                eff_z = raw_z
             profile_points.append(
                 {
                     "dist_m": d_m,
-                    "ground_m": round(eff_z, 2),
+                    "ground_m": round(raw_z, 2),
                     "wse_m": round(wse, 2),
-                    "depth_m": round(max(0.0, wse - eff_z), 2),
+                    "depth_m": round(max(0.0, wse - raw_z), 2),
                 }
             )
 
@@ -770,110 +735,80 @@ def project_photo_to_flood_shapefile(
         )
         win = raw_win.intersection(full_win).round_offsets().round_lengths()
 
+        # Observation corridor: shipped separately as corridor_geojson.
+        # It is never unioned into the flood extent.
         corridor_geom = LineString([(cam_x, cam_y), (target_x, target_y)]).buffer(
             max(28.0, min(52.0, est_distance_m * 0.78))
         )
-        corridor_probe = LineString([(cam_x, cam_y), (target_x, target_y)]).buffer(68.0)
 
-        poly_low = Polygon()
-        poly_med = Polygon()
-        poly_crit = Polygon()
+        tier_geoms: Dict[str, Any] = {"low": Polygon(), "medium": Polygon(), "critical": Polygon()}
+        tier_stats: Dict[str, Dict[str, float]] = {}
+        flood_area_band: Dict[str, float] = {}
 
         if win.width >= 3 and win.height >= 3:
             dem_sub_raw = src.read(1, window=win)
-            dem_sub = _bare_earth_filter_3x3(dem_sub_raw, src.nodata)
+            dem_sub = dem_sub_raw.astype(np.float64)
             win_transform = src.window_transform(win)
+            cell_area = abs(float(win_transform.a) * float(win_transform.e))
 
             valid_dem = (dem_sub_raw != src.nodata) & (dem_sub_raw > -100)
-            # Physical depth: WSE - bare-earth DEM elevation per SPEC.md
-            raw_depth_grid = np.where(valid_dem, np.maximum(0.0, float(wse) - dem_sub), 0.0)
 
-            # Connected flood fill: cells where bare-earth DEM <= WSE and depth >= 0.05m
-            flooded_cells = valid_dem & (dem_sub <= wse) & (raw_depth_grid >= 0.05)
-            lbl, num_features = label(flooded_cells)
+            def _target_label(lbl_arr, tr, tc):
+                lbl_val = int(lbl_arr[tr, tc])
+                if lbl_val == 0:
+                    sub = lbl_arr[max(0, tr - 3): tr + 4, max(0, tc - 3): tc + 4]
+                    nz = sub[sub > 0]
+                    if len(nz) > 0:
+                        lbl_val = int(np.bincount(nz).argmax())
+                return lbl_val
 
-            inv_win = ~win_transform
-            tc_f, tr_f = inv_win * (target_x, target_y)
-            tc = int(np.clip(np.round(tc_f), 0, dem_sub.shape[1] - 1))
-            tr = int(np.clip(np.round(tr_f), 0, dem_sub.shape[0] - 1))
+            def _connected_mask_for_wse(wse_val):
+                depth = np.where(valid_dem, np.maximum(0.0, float(wse_val) - dem_sub), 0.0)
+                flooded = valid_dem & (dem_sub <= wse_val) & (depth >= 0.05)
+                lbl_arr, _n = label(flooded)
+                inv = ~win_transform
+                tc_f, tr_f = inv * (target_x, target_y)
+                tc = int(np.clip(np.round(tc_f), 0, dem_sub.shape[1] - 1))
+                tr = int(np.clip(np.round(tr_f), 0, dem_sub.shape[0] - 1))
+                t_lbl = _target_label(lbl_arr, tr, tc)
+                if t_lbl > 0:
+                    return lbl_arr == t_lbl, depth
+                return np.zeros_like(flooded), depth
 
-            target_lbl = lbl[tr, tc]
-            if target_lbl == 0:
-                r_min = max(0, tr - 3)
-                r_max = min(dem_sub.shape[0], tr + 4)
-                c_min = max(0, tc - 3)
-                c_max = min(dem_sub.shape[1], tc + 4)
-                sub_lbl = lbl[r_min:r_max, c_min:c_max]
-                non_zero = sub_lbl[sub_lbl > 0]
-                if len(non_zero) > 0:
-                    target_lbl = np.bincount(non_zero).argmax()
-
-            cc_f, cr_f = inv_win * (cam_x, cam_y)
-            cc = int(np.clip(np.round(cc_f), 0, dem_sub.shape[1] - 1))
-            cr = int(np.clip(np.round(cr_f), 0, dem_sub.shape[0] - 1))
-            cam_lbl = lbl[cr, cc]
-
-            connected_ids = [i for i in [target_lbl, cam_lbl] if i > 0]
-            if connected_ids:
-                connected_mask = np.isin(lbl, connected_ids)
-            else:
-                connected_mask = flooded_cells
-
+            connected_mask, raw_depth_grid = _connected_mask_for_wse(wse)
             depth_grid = np.where(connected_mask, raw_depth_grid, 0.0)
 
-            mask_total = depth_grid >= 0.05
-            mask_med_plus = depth_grid >= 0.50
-            mask_crit = depth_grid > 1.50
+            for band_name, band_wse in (("low", wse_low), ("high", wse_high)):
+                band_mask, _bd = _connected_mask_for_wse(band_wse)
+                flood_area_band[band_name] = round(float(band_mask.sum()) * cell_area, 1)
 
-            clean_total = _mask_to_clean_zone_geom(
-                mask_total, win_transform, corridor_geom, corridor_probe, include_corridor=(water_depth_m > 0.05)
-            )
-            clean_med_plus = _mask_to_clean_zone_geom(
-                mask_med_plus, win_transform, corridor_geom, corridor_probe, include_corridor=(water_depth_m > 0.50)
-            )
-            clean_crit = _mask_to_clean_zone_geom(
-                mask_crit, win_transform, corridor_geom, corridor_probe, include_corridor=(water_depth_m > 1.50)
-            )
+            tier_masks = {
+                "low": connected_mask & (depth_grid >= 0.05) & (depth_grid < 0.50),
+                "medium": connected_mask & (depth_grid >= 0.50) & (depth_grid <= 1.50),
+                "critical": connected_mask & (depth_grid > 1.50),
+            }
+            for tier_name, tier_mask in tier_masks.items():
+                tier_geoms[tier_name] = _mask_to_zone_geom(tier_mask, win_transform)
+                vals = depth_grid[tier_mask]
+                if vals.size > 0:
+                    tier_stats[tier_name] = {
+                        "mean": round(float(np.mean(vals)), 2),
+                        "max": round(float(np.max(vals)), 2),
+                        "p90": round(float(np.percentile(vals, 90)), 2),
+                    }
+                else:
+                    tier_stats[tier_name] = {"mean": 0.0, "max": 0.0, "p90": 0.0}
 
-            # Ensure topological nesting: crit <= med_plus <= total
-            if not clean_crit.is_empty:
-                clean_med_plus = unary_union([clean_med_plus, clean_crit.buffer(2.0)])
-            if not clean_med_plus.is_empty:
-                clean_total = unary_union([clean_total, clean_med_plus.buffer(2.0)])
-
-            poly_crit = clean_crit.buffer(0)
-            poly_med = clean_med_plus.difference(poly_crit).buffer(0) if not clean_med_plus.is_empty else Polygon()
-            poly_low = clean_total.difference(clean_med_plus).buffer(0) if not clean_total.is_empty else Polygon()
-
-    tier_Specs = [
-        (
-            "low",
-            "< 0.5 m (Low)",
-            "#1e7b4f",
-            "#155e3b",
-            poly_low,
-            round(min(0.45, max(0.15, float(water_depth_m) * 0.45)), 2),
-        ),
-        (
-            "medium",
-            "0.5–1.5 m (Medium)",
-            "#d97706",
-            "#b45309",
-            poly_med,
-            round(min(1.45, max(0.55, float(water_depth_m) * 0.85)), 2),
-        ),
-        (
-            "critical",
-            "> 1.5 m (Critical)",
-            "#c4242a",
-            "#991b1b",
-            poly_crit,
-            round(max(1.55, float(water_depth_m)), 2),
-        ),
-    ]
-
+    _TIER_STYLE = {
+        "low": ("< 0.5 m (Low)", "#1e7b4f", "#155e3b"),
+        "medium": ("0.5-1.5 m (Medium)", "#d97706", "#b45309"),
+        "critical": ("> 1.5 m (Critical)", "#c4242a", "#991b1b"),
+    }
     tier_records = []
-    for r_tier, z_label, f_col, o_col, z_geom, rep_depth in tier_Specs:
+    for r_tier in ("low", "medium", "critical"):
+        z_geom = tier_geoms[r_tier]
+        z_label, f_col, o_col = _TIER_STYLE[r_tier]
+        stats = tier_stats.get(r_tier, {"mean": 0.0, "max": 0.0, "p90": 0.0})
         if z_geom is not None and not z_geom.is_empty and z_geom.area >= 15.0:
             tier_records.append(
                 {
@@ -884,28 +819,35 @@ def project_photo_to_flood_shapefile(
                     "line_color": o_col,
                     "wse_m": round(wse, 2),
                     "ground_m": round(ground_elev, 2),
-                    "depth_m": rep_depth,
-                    "max_dpth_m": round(float(water_depth_m) * 1.15, 2),
+                    # Real statistics of the depth grid inside this polygon:
+                    # depth_m = mean depth, max_dpth_m = maximum depth.
+                    "depth_m": stats["mean"],
+                    "max_dpth_m": stats["max"],
+                    "d_p90_m": stats["p90"],
                     "area_sqm": round(float(z_geom.area), 1),
                     "barangay": resolved_barangay,
                 }
             )
 
     if not tier_records:
+        # Degenerate case (no connected DEM cell at/above 0.05 m depth):
+        # mark only the target point, explicitly labelled, with the depth
+        # that holds there by construction (WSE - Z_target = water_depth_m).
         fallback_tier = "critical" if water_depth_m > 1.5 else ("medium" if water_depth_m >= 0.5 else "low")
-        fallback_col = "#c4242a" if fallback_tier == "critical" else ("#d97706" if fallback_tier == "medium" else "#1e7b4f")
-        fallback_geom = corridor_geom.union(Point(target_x, target_y).buffer(65.0))
+        _z_label, fallback_col, _o_col = _TIER_STYLE[fallback_tier]
+        fallback_geom = Point(target_x, target_y).buffer(10.0)
         tier_records.append(
             {
                 "geometry": fallback_geom,
                 "risk_tier": fallback_tier,
-                "zone_label": f"{water_depth_m:.2f} m",
+                "zone_label": f"{water_depth_m:.2f} m (target point only)",
                 "fill_color": fallback_col,
                 "line_color": fallback_col,
                 "wse_m": round(wse, 2),
                 "ground_m": round(ground_elev, 2),
                 "depth_m": round(float(water_depth_m), 2),
                 "max_dpth_m": round(float(water_depth_m), 2),
+                "d_p90_m": round(float(water_depth_m), 2),
                 "area_sqm": round(float(fallback_geom.area), 1),
                 "barangay": resolved_barangay,
             }
@@ -922,6 +864,13 @@ def project_photo_to_flood_shapefile(
 
     gdf_wgs84 = gdf_connected.to_crs("EPSG:4326")
     flood_geojson_dict = gdf_wgs84.__geo_interface__
+
+    corridor_geojson_dict: Dict[str, Any] = {"type": "FeatureCollection", "features": []}
+    if corridor_geom is not None and not corridor_geom.is_empty:
+        corridor_wgs84 = gpd.GeoDataFrame(
+            [{"layer": "observation_corridor", "is_flood_extent": False}], geometry=[corridor_geom], crs="EPSG:32651"
+        ).to_crs("EPSG:4326")
+        corridor_geojson_dict = corridor_wgs84.__geo_interface__
 
     # Write shapefile components inside an isolated temp dir to avoid Windows WinError 32 file lock collisions
     tmp_dir = out_path / f"_tmp_{safe_run_id}_{uuid.uuid4().hex[:8]}"
@@ -987,12 +936,20 @@ def project_photo_to_flood_shapefile(
         "run_id": safe_run_id,
         "target_lat": round(target_lat, 6),
         "target_lon": round(target_lon, 6),
-        "ground_dem_m": round(eff_target_z, 2),
-        "cam_ground_dem_m": round(cam_street_elev, 2),
+        "ground_dem_m": round(ground_elev, 2),
+        "cam_ground_dem_m": round(cam_ground_elev, 2),
         "camera_in_water": True,
         "profile_points": profile_points,
         "measured_depth_m": round(water_depth_m, 2),
         "water_surface_elev_m": round(wse, 2),
+        "wse_camera_anchored_m": round(wse_camera_anchored, 2),
+        "wse_method": "spec_target_anchored",
+        "dem_uncertainty_m": round(dem_uncertainty, 2),
+        "wse_low_m": round(wse_low, 2),
+        "wse_high_m": round(wse_high, 2),
+        "flood_area_low_sqm": flood_area_band.get("low"),
+        "flood_area_high_sqm": flood_area_band.get("high"),
+        "corridor_geojson": corridor_geojson_dict,
         "flood_area_sqm": flood_area_sqm,
         "flood_geojson": flood_geojson_dict,
         "buildings_geojson": inundation_data["buildings_geojson"],
@@ -1004,7 +961,7 @@ def project_photo_to_flood_shapefile(
 
 
 BUILDINGS_SHP_PATH = DATA_DIR / "Buildings.shp"
-ENRICHED_BUILDINGS_PATH = DATA_DIR / "rodriguez_buildings_enriched.parquet"
+ENRICHED_BUILDINGS_PATH = DATA_DIR / "rodriguez_buildings_enriched_v2.parquet"  # v2: point-sampled ground_elev_m (v1 used a 3x3 minimum)
 _OSM_BUILDINGS_GDF: Optional[gpd.GeoDataFrame] = None
 _OSM_BUILDINGS_LOCK = threading.Lock()
 
@@ -1167,7 +1124,8 @@ def _load_osm_buildings() -> Optional[gpd.GeoDataFrame]:
         gdf["height_m"] = raw_type.map(_TYPE_DISPLAY_HEIGHT_M).fillna(gdf["infra_category"].map(_TYPE_DISPLAY_HEIGHT_M)).fillna(5.0)
         gdf["footprint_sqm"] = gdf.geometry.area.round(1)
 
-        # Vectorized bare-earth DEM sampling
+        # Point DEM sampling at each footprint centroid (the DEM cell containing
+        # the centroid). No 3x3 minimum/percentile: that biased ground low.
         cents = gdf.geometry.centroid
         with rasterio.open(ensure_dem_exists()) as src:
             dem = src.read(1).astype(np.float32)
@@ -1175,14 +1133,9 @@ def _load_osm_buildings() -> Optional[gpd.GeoDataFrame]:
             dem = np.where((dem == nodata) | (dem < -100), np.nan, dem)
             inv = ~src.transform
             cols_f, rows_f = inv * (cents.x.to_numpy(), cents.y.to_numpy())
-            rows = np.clip(np.floor(rows_f).astype(int), 1, src.height - 2)
-            cols = np.clip(np.floor(cols_f).astype(int), 1, src.width - 2)
-        stack = np.stack(
-            [dem[rows + dr, cols + dc] for dr in (-1, 0, 1) for dc in (-1, 0, 1)],
-            axis=0,
-        )
-        with np.errstate(all="ignore"):
-            ground = np.nanmin(stack, axis=0)
+            rows = np.clip(np.floor(rows_f).astype(int), 0, src.height - 1)
+            cols = np.clip(np.floor(cols_f).astype(int), 0, src.width - 1)
+        ground = dem[rows, cols]
         fallback = np.nanmedian(dem) if np.isfinite(np.nanmedian(dem)) else 30.0
         gdf["ground_elev_m"] = np.round(np.where(np.isfinite(ground), ground, fallback), 2).astype(np.float32)
 
@@ -1265,16 +1218,19 @@ def get_inundated_structures(
     raw_depth = np.round(np.maximum(0.0, float(wse_m) - sub_gdf["ground_elev_m"].to_numpy()), 2) if n > 0 else np.array([])
 
     if n > 0:
+        # Tier from the building's own physical depth, so tier and
+        # flood_depth_m can never contradict each other.
+        depth_tiers = np.where(
+            raw_depth > 1.5, "critical",
+            np.where(raw_depth >= 0.5, "medium",
+                     np.where(raw_depth >= 0.05, "low", "safe")),
+        )
         if has_zones:
-            # Building intersects flood polygon and has physical depth >= 0.05m
-            for tier in ("low", "medium", "critical"):
-                geom = zone_geoms[tier]
-                if geom.is_empty:
-                    continue
-                hit = sub_gdf.geometry.intersects(geom).to_numpy()
-                tiers[hit & (raw_depth >= 0.05)] = tier
+            flood_union = unary_union([g for g in zone_geoms.values() if not g.is_empty])
+            inside = sub_gdf.geometry.intersects(flood_union).to_numpy()
+            tiers = np.where(inside, depth_tiers, "safe")
         else:
-            tiers = np.where(raw_depth > 1.5, "critical", np.where(raw_depth >= 0.5, "medium", np.where(raw_depth >= 0.05, "low", "safe")))
+            tiers = depth_tiers
 
     # True unclipped physical building depth: WSE - ground_elev_m per SPEC.md
     depths = np.where(tiers != "safe", raw_depth, 0.0)
@@ -1355,13 +1311,17 @@ def get_inundated_structures(
                 "risk_tier": str(r["risk_tier"]),
             })
 
-    # Critical buildings for Muse Glimmer dispatch tickets (top 6 prioritized by infra importance and depth)
+    # Critical buildings for dispatch tickets (top 6 prioritized by infra importance and depth)
     if affected_count > 0:
         aff_wgs84 = sub_wgs84[affected_mask].copy()
         aff_wgs84["_evac_rank"] = np.where(aff_wgs84["is_evac_center"], 0, 1)
         cat_order = {"healthcare": 1, "emergency_civic": 2, "education": 3, "religious": 4, "commercial_logistics": 5, "residential": 6}
         aff_wgs84["_cat_rank"] = aff_wgs84["infra_category"].map(cat_order).fillna(9)
         aff_sorted = aff_wgs84.sort_values(by=["_evac_rank", "_cat_rank", "flood_depth_m"], ascending=[True, True, False])
+        # Centroid in a projected CRS (aff_sorted is EPSG:4326; a geographic
+        # centroid is both warned about and slightly distorted), then back.
+        _cents = aff_sorted.to_crs("EPSG:32651").geometry.centroid.to_crs("EPSG:4326")
+        aff_sorted = aff_sorted.assign(building_lon=_cents.x.to_numpy().round(6), building_lat=_cents.y.to_numpy().round(6))
         critical_buildings = aff_sorted.drop(columns=["geometry", "_evac_rank", "_cat_rank"], errors="ignore").head(6).to_dict(orient="records")
     else:
         critical_buildings = []
@@ -1523,7 +1483,8 @@ def compute_safe_rescue_route(
         dest_ground_m = _sample_dem_elevation(src, dx_utm, dy_utm)
     if wse_m is None:
         wse_m = dest_ground_m + 1.2
-    target_water_depth_m = max(0.0, float(wse_m) - dest_ground_m)
+    # (Per-edge flood depths are computed from the DEM below; the former
+    # distance-falloff estimate around the destination is no longer used.)
 
     G_shp, node_list, node_arr = _get_road_shapefile_graph()
     if G_shp is not None and node_arr is not None and len(node_list) > 0:
@@ -1544,24 +1505,41 @@ def compute_safe_rescue_route(
         if orig_node not in G_local or dest_node not in G_local or not nx.has_path(G_local, orig_node, dest_node):
             G_local = G_shp
 
-        # Identify flooded road segments near the target (within 130m of target)
+        # Flood depth per road edge from the DEM vs WSE: for every edge in the
+        # local graph, depth = max(0, WSE - DEM) sampled at both endpoints (and
+        # at the midpoint for long segments). An edge is severed when its depth
+        # exceeds THIS vehicle's max_passable_depth_m - no distance falloff and
+        # no hardcoded depth thresholds.
         severed_features = []
         G_detour = G_local.copy()
+        node_depth_cache: Dict[Tuple[float, float], float] = {}
 
-        for u, v, data in G_local.edges(data=True):
-            mx = (u[0] + v[0]) / 2.0
-            my = (u[1] + v[1]) / 2.0
-            dist_to_target = math.hypot((mx - dest_lon) * 107600.0, (my - dest_lat) * 110600.0)
-            if dist_to_target <= 125.0 and target_water_depth_m > 0.50:
-                edge_depth = round(target_water_depth_m * max(0.45, 1.0 - dist_to_target / 160.0), 2)
-                if edge_depth > 0.50:
+        def _depth_at(lonlat, dem_src):
+            cached = node_depth_cache.get(lonlat)
+            if cached is not None:
+                return cached
+            x_utm, y_utm = to_utm.transform(lonlat[0], lonlat[1])
+            z = _sample_dem_elevation(dem_src, x_utm, y_utm)
+            d = max(0.0, float(wse_m) - float(z))
+            node_depth_cache[lonlat] = d
+            return d
+
+        with rasterio.open(ensure_dem_exists()) as dem_src:
+            for u, v, data in G_local.edges(data=True):
+                edge_depth = max(_depth_at(u, dem_src), _depth_at(v, dem_src))
+                seg_m = float(data.get("length", 0.0) or 0.0)
+                if seg_m > 40.0:
+                    mid = ((u[0] + v[0]) / 2.0, (u[1] + v[1]) / 2.0)
+                    edge_depth = max(edge_depth, _depth_at(mid, dem_src))
+                edge_depth = round(edge_depth, 2)
+                if edge_depth > float(max_passable_depth_m):
                     severed_features.append(
                         {
                             "type": "Feature",
                             "properties": {
                                 "road_name": data.get("name", "Montalban Road"),
                                 "flood_depth_m": edge_depth,
-                                "max_passable_m": round(max_passable_depth_m, 2),
+                                "max_passable_m": round(float(max_passable_depth_m), 2),
                                 "status": "SEVERED",
                             },
                             "geometry": {
@@ -1570,12 +1548,22 @@ def compute_safe_rescue_route(
                             },
                         }
                     )
-                    # Remove flooded segments for low-clearance wheeled trucks (<=0.6m); amphibious boats traverse shortest street path
-                    if dist_to_target > 35.0 and u != dest_node and v != dest_node and max_passable_depth_m <= 0.6:
-                        G_detour.remove_edge(u, v)
+                    # Keep edges incident to origin/destination so a route can
+                    # still start/end; every other severed edge is removed.
+                    if u not in (orig_node, dest_node) and v not in (orig_node, dest_node):
+                        if G_detour.has_edge(u, v):
+                            G_detour.remove_edge(u, v)
 
-        # If wheeled truck (max_passable_depth_m <= 0.6) faces deep floodwater (>0.85m), mark primary route severed
-        if max_passable_depth_m <= 0.6 and target_water_depth_m > 0.85 and len(severed_features) > 0:
+        path_nodes: List[Tuple[float, float]] = []
+        try:
+            if nx.has_path(G_detour, orig_node, dest_node):
+                path_nodes = nx.shortest_path(G_detour, orig_node, dest_node, weight="weight")
+        except (nx.NetworkXNoPath, nx.NodeNotFound):
+            path_nodes = []
+
+        if not path_nodes:
+            # No route exists without crossing water deeper than this vehicle
+            # can pass. Report severed honestly instead of routing through it.
             return {
                 "route_found": False,
                 "severed_segments_count": len(severed_features),
@@ -1584,15 +1572,6 @@ def compute_safe_rescue_route(
                 "route_geojson": {"type": "FeatureCollection", "features": []},
                 "severed_roads_geojson": {"type": "FeatureCollection", "features": severed_features[:40]},
             }
-
-        path_nodes: List[Tuple[float, float]] = []
-        try:
-            if nx.has_path(G_detour, orig_node, dest_node):
-                path_nodes = nx.shortest_path(G_detour, orig_node, dest_node, weight="weight")
-            else:
-                path_nodes = nx.shortest_path(G_local, orig_node, dest_node, weight="length")
-        except (nx.NetworkXNoPath, nx.NodeNotFound):
-            path_nodes = []
 
         if len(path_nodes) >= 2:
             coords = [[n[0], n[1]] for n in path_nodes]

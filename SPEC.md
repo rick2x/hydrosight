@@ -271,15 +271,11 @@ When initializing this repository, execute in this exact order:
 
 ## 9. Bonus Prize Qualification Requirements ($50K Bonus Pool)
 
-To qualify for all five Meta Hackathon Bonus Categories, implement the following architectural additions:
+To qualify for the Meta Hackathon Bonus Categories (9.1 open-weight is dropped and not claimed; see below), implement the following architectural additions:
 
-### 9.1 Best Build on Meta Open Weight Models ($10,000)
-- **Requirement:** Serve `muse-glimmer` or `muse-spark-open` via an official infrastructure partner (Modal, Baseten, or Fireworks AI) OR self-hosted hardware (local Ollama / vLLM endpoint) so infrastructure usage is verifiable.
-- **Implementation in `backend/meta_agents.py`:**
-  - Support dual provider routing via environment variables:
-    - `META_API_BASE_URL` (default `https://api.meta.ai/v1` for closed `muse-spark-1.3` and `sam-3.1`)
-    - `OPEN_WEIGHT_BASE_URL` & `OPEN_WEIGHT_API_KEY` (pointing to Fireworks/Baseten/Modal or local vLLM/Ollama serving `muse-glimmer` and `muse-spark-open`)
-  - Log every open-weight inference call (`model_id`, `provider`, `latency_ms`, `tokens`) into `backend/outputs/open_weight_verification.log` and display a **"Powered by Meta Open Weights (Muse Glimmer + Muse Spark Open)"** telemetry badge in the UI header.
+### 9.1 Best Build on Meta Open Weight Models (,000) - DROPPED, NOT CLAIMED
+- **Status (2026-10-27):** This category is intentionally NOT pursued and must not be claimed in the UI, API, logs, or submission materials. No open-weight model is served (no Fireworks/Baseten/Modal/vLLM/Ollama endpoint); ticket formatting uses muse-spark-1.1 via the Meta API or a rule-based fallback, and telemetry is recorded in backend/outputs/dispatch_telemetry.log as plain dispatch telemetry.
+- Do not reintroduce open-weight branding, badges, verification logs, or provider claims unless a real open-weight deployment exists and is exercised end-to-end.
 
 ### 9.2 Best Agentic Use-Case ($5,000)
 - **Requirement:** Demonstrate true multi-step autonomous decision-making and tool coordination rather than a single prompt-response call.

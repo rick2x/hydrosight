@@ -9,7 +9,7 @@ import rasterio
 ROOT_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = ROOT_DIR / "backend" / "data"
 shp_path = DATA_DIR / "Buildings.shp"
-out_parquet = DATA_DIR / "rodriguez_buildings_enriched.parquet"
+out_parquet = DATA_DIR / "rodriguez_buildings_enriched_v2.parquet"  # v2: point-sampled ground_elev_m
 dem_path = DATA_DIR / "rodriguez_dem.tif"
 brgy_path = ROOT_DIR / "boundary" / "political_boundary_rodriguez.shp"
 ec_path = DATA_DIR / "evacuationcenters.csv"
@@ -125,7 +125,7 @@ _TYPE_HEIGHTS = {
 gdf["height_m"] = raw_type.map(_TYPE_HEIGHTS).fillna(gdf["infra_category"].map(_TYPE_HEIGHTS)).fillna(5.0)
 gdf["footprint_sqm"] = gdf.geometry.area.round(1)
 
-# DEM bare-earth sampling
+# DEM point sampling at each centroid (no 3x3 minimum, which biased ground low)
 print("Sampling DEM ground elevation...")
 cents = gdf.geometry.centroid
 with rasterio.open(dem_path) as src:
@@ -134,15 +134,10 @@ with rasterio.open(dem_path) as src:
     dem = np.where((dem == nodata) | (dem < -100), np.nan, dem)
     inv = ~src.transform
     cols_f, rows_f = inv * (cents.x.to_numpy(), cents.y.to_numpy())
-    rows = np.clip(np.floor(rows_f).astype(int), 1, src.height - 2)
-    cols = np.clip(np.floor(cols_f).astype(int), 1, src.width - 2)
+    rows = np.clip(np.floor(rows_f).astype(int), 0, src.height - 1)
+    cols = np.clip(np.floor(cols_f).astype(int), 0, src.width - 1)
 
-stack = np.stack(
-    [dem[rows + dr, cols + dc] for dr in (-1, 0, 1) for dc in (-1, 0, 1)],
-    axis=0,
-)
-with np.errstate(all="ignore"):
-    ground = np.nanmin(stack, axis=0)
+ground = dem[rows, cols]
 fallback = np.nanmedian(dem) if np.isfinite(np.nanmedian(dem)) else 30.0
 gdf["ground_elev_m"] = np.round(np.where(np.isfinite(ground), ground, fallback), 2).astype(np.float32)
 

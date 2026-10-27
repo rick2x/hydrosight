@@ -116,6 +116,7 @@ export default function App() {
             barangay: resolvedBrgy,
             max_passable_depth_m: 0.5,
             confidence_score: currentConfidence,
+            flood_geojson: proj?.flood_geojson || null,
           }),
         });
         if (triRes.ok) {
@@ -228,6 +229,15 @@ export default function App() {
 
   useEffect(() => {
     initApp();
+  }, []);
+
+  // Pre-load the default benchmark scenario so Step 1 opens with the photo,
+  // SAM mask bounding boxes, and visual gauge already analyzed (SPEC Sec.7).
+  const didAutoLoadRef = useRef(false);
+  useEffect(() => {
+    if (didAutoLoadRef.current) return;
+    didAutoLoadRef.current = true;
+    handleLoadSampleScenario("kasiglahan_village");
   }, []);
 
   const handleUpdateCameraParams = (keyOrObj, maybeValue) => {
@@ -424,6 +434,7 @@ export default function App() {
       <main className="app-container">
         {/* Unified Mission Deck Header */}
         <HeaderBar
+          analysisResult={analysisResult}
           floodProjection={floodProjection}
           triageData={triageData}
           onRunTriage={() => {
@@ -486,8 +497,8 @@ export default function App() {
             </div>
             <span className="kpi-subtext num" style={{ color: analysisResult ? "var(--positive)" : "var(--muted)", fontWeight: 500 }}>
               {analysisResult
-                ? `SAM 3.1 + Muse Spark · ${Math.round(currentConfidence * 100)}% conf`
-                : "Standby · Awaiting photo input"}
+                ? `${analysisResult.fallback_used ? "Calibrated baseline (live unavailable)" : analysisResult.cached || analysisResult.execution_mode === "cached" ? "SAM 3.1 + Muse Spark - cached" : "SAM 3.1 + Muse Spark - live"} - ${Math.round(currentConfidence * 100)}% conf`
+                : "Standby - Awaiting photo input"}
             </span>
           </div>
 
@@ -769,7 +780,7 @@ export default function App() {
                   Triggering Autonomous Agent Triage & Dispatch...
                 </h3>
                 <p style={{ margin: 0, fontSize: "13px", color: "var(--muted)", maxWidth: "560px", lineHeight: 1.45 }}>
-                  Muse Spark 1.3 is loading the Rodriguez road network graph, clipping severed segments where floodwater depth exceeds 0.5 m, computing the shortest safe corridor to nearest evacuation centers, and batching building dispatch tickets for Muse Glimmer.
+                  Loading the Rodriguez road network graph, clipping road segments whose DEM flood depth exceeds the vehicle limit, computing the shortest safe corridor to the nearest evacuation center, and preparing building dispatch tickets.
                 </p>
               </div>
               <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", justifyContent: "center" }}>
@@ -780,7 +791,7 @@ export default function App() {
                   Max Passable Depth: 0.50 m
                 </span>
                 <span className="status-pill positive num" style={{ fontSize: "11px" }}>
-                  Muse Spark 1.3 + Muse Glimmer Active
+                  DEM flood-fill + road-graph routing
                 </span>
               </div>
             </div>

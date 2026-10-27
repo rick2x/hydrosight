@@ -63,6 +63,14 @@ export default function PhotoInspector({
     (isCustomPhoto ? null : scenario?.photo_url) ||
     null;
 
+  // The basis is the first non-water reference object named by the gauge
+  const basisConcept = (
+    masks.find(
+      (m) =>
+        m.concept !== "floodwater" &&
+        (gauge.reference_object_detected || "").toLowerCase().includes(m.concept.toLowerCase())
+    ) || {}
+  ).concept;
   const angleOffsetDeg = ((cameraParams.click_u - 0.5) * cameraParams.fov_deg).toFixed(1);
   const targetBearingDeg = (
     (cameraParams.azimuth_deg + (cameraParams.click_u - 0.5) * cameraParams.fov_deg + 360) %
@@ -452,7 +460,7 @@ export default function PhotoInspector({
             >
               <img
                 src={surgeResult.surge_forecast_image_url}
-                alt="Muse Image +1.5m typhoon surge forecast"
+                alt="+1.5m typhoon surge forecast"
                 style={{
                   width: "100%",
                   height: "100%",
@@ -484,6 +492,8 @@ export default function PhotoInspector({
                 const pts = (m.polygon_norm || [])
                   .map(([u, v]) => `${(u * 1000).toFixed(1)},${(v * 562.5).toFixed(1)}`)
                   .join(" ");
+                const isBasis = Boolean(basisConcept && m.concept === basisConcept);
+                const labelText = `${m.concept}${isBasis ? " · basis" : ""} · ${Math.round((m.confidence || 0.9) * 100)}%${m.concept !== "floodwater" && m.submerged_ratio != null ? ` · ${Math.round(m.submerged_ratio * 100)}% sub` : ""}${m.geometry_source === "sam_polygon" ? " · mask" : m.geometry_source === "sam_box" ? " · box" : ""}`;
                 const [bx1, by1, bx2, by2] = m.bbox_norm || [0.4, 0.4, 0.6, 0.6];
                 return (
                   <g key={m.id}>
@@ -492,7 +502,7 @@ export default function PhotoInspector({
                         points={pts}
                         fill={style.fill}
                         stroke={style.stroke}
-                        strokeWidth="2"
+                        strokeWidth={isBasis ? 3.5 : 2}
                       />
                     )}
                     <rect
@@ -502,13 +512,13 @@ export default function PhotoInspector({
                       height={(by2 - by1) * 562.5}
                       fill="none"
                       stroke={style.stroke}
-                      strokeWidth="1.2"
+                      strokeWidth={isBasis ? 2.5 : 1.2}
                       strokeDasharray="4,3"
                     />
                     <rect
                       x={bx1 * 1000}
                       y={Math.max(4, by1 * 562.5 - 20)}
-                      width={Math.min(220, (m.concept.length + 8) * 8)}
+                      width={Math.min(360, (labelText.length + 2) * 7)}
                       height="18"
                       fill="#0f172a"
                       rx="3"
@@ -521,7 +531,7 @@ export default function PhotoInspector({
                       fontFamily="var(--font)"
                       fontWeight="500"
                     >
-                      {m.concept} · {Math.round((m.confidence || 0.9) * 100)}%
+                      {labelText}
                     </text>
                   </g>
                 );
@@ -594,6 +604,40 @@ export default function PhotoInspector({
       </div>
       )}
 
+      {/* Analysis provenance / missing-boxes notice */}
+      {photoUrl && !photoUploading && masks.length === 0 && (
+        <div
+          style={{
+            padding: "8px 12px",
+            borderRadius: "6px",
+            backgroundColor: "var(--warning-soft, #fffbeb)",
+            color: "var(--warning, #92400e)",
+            border: "1px solid var(--warning-border, #fcd34d)",
+            fontSize: "12.5px",
+          }}
+        >
+          No reference-object bounding boxes for this photo. Live SAM 3.1 segmentation is
+          unavailable (no META_API_KEY configured, or the live call failed), so no basis
+          object could be detected — click the waterline on the photo to set the target manually.
+        </div>
+      )}
+      {photoUrl && !photoUploading && masks.length > 0 && analysisResult?.fallback_used && (
+        <div
+          style={{
+            padding: "8px 12px",
+            borderRadius: "6px",
+            backgroundColor: "var(--surface)",
+            color: "var(--muted)",
+            border: "1px solid var(--border)",
+            fontSize: "12.5px",
+          }}
+        >
+          Showing calibrated baseline bounding boxes ({analysisResult.execution_mode || "fallback"}):
+          live SAM 3.1 was unavailable, so these are preset reference overlays, not live
+          detections. The basis box used for the depth gauge is outlined thicker and labelled “basis”.
+        </div>
+      )}
+
       {/* Visual Hydrological Gauge Telemetry */}
       <div
         style={{
@@ -623,7 +667,7 @@ export default function PhotoInspector({
           {photoUrl && !photoUploading && (
             <div style={{ display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
               <span className="status-pill neutral num" style={{ fontSize: "11.5px" }}>
-                Std {(gauge.reference_standard_height_m ?? 1.65).toFixed(2)} m
+                {!analysisResult ? "Not analyzed yet" : analysisResult.fallback_used ? "Calibrated baseline - not live" : analysisResult.cached || analysisResult.execution_mode === "cached" ? "Cached result" : "Live inference"} · Std {(gauge.reference_standard_height_m ?? 1.65).toFixed(2)} m
               </span>
               <span className="status-pill warning num" style={{ fontSize: "11.5px" }}>
                 Submerged {Math.round((gauge.submerged_ratio ?? 0.82) * 100)}%

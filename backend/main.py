@@ -27,7 +27,7 @@ from backend.geo_engine import (
 )
 from backend.meta_agents import (
     PHOTOS_DIR,
-    VERIFICATION_LOG_PATH,
+    DISPATCH_LOG_PATH,
     analyze_water_level_with_sam3,
     ensure_sample_photos,
     get_scenarios,
@@ -232,18 +232,18 @@ def download_shapefile(run_id: str) -> FileResponse:
     )
 
 
-@app.get("/api/v1/open-weight-logs")
-def get_open_weight_logs() -> dict:
+@app.get("/api/v1/dispatch-logs")
+def get_dispatch_logs() -> dict:
     entries = []
-    if VERIFICATION_LOG_PATH.exists():
-        for line in VERIFICATION_LOG_PATH.read_text(encoding="utf-8").splitlines():
+    if DISPATCH_LOG_PATH.exists():
+        for line in DISPATCH_LOG_PATH.read_text(encoding="utf-8").splitlines():
             if line.strip():
                 try:
                     entries.append(json.loads(line))
                 except Exception:
                     pass
     return {
-        "log_file": str(VERIFICATION_LOG_PATH),
+        "log_file": str(DISPATCH_LOG_PATH),
         "count": len(entries),
         "recent_calls": entries[-10:],
     }

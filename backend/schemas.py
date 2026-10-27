@@ -1,27 +1,45 @@
 from typing import Any, Dict, List, Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class VisualGaugeResult(BaseModel):
     reference_object_detected: str = Field(..., description="Name of submerged object used as scale reference")
-    reference_standard_height_m: float = Field(..., description="Typical physical height of reference object in meters")
-    submerged_ratio: float = Field(..., description="Fraction of object submerged between 0.0 and 1.0")
-    estimated_water_depth_m: float = Field(..., description="Calculated floodwater depth at the object in meters")
-    estimated_distance_from_camera_m: float = Field(..., description="Estimated forward distance from camera in meters")
-    recommended_click_u: float = Field(..., description="Normalized horizontal X position [0.0-1.0] of reference object")
-    recommended_click_v: float = Field(..., description="Normalized vertical Y position [0.0-1.0] of waterline at object")
-    confidence_score: float = Field(..., description="Confidence from 0.0 to 1.0")
+    reference_standard_height_m: float = Field(..., ge=0.1, le=10.0, description="Typical physical height of reference object in meters")
+    submerged_ratio: float = Field(..., ge=0.0, le=1.0, description="Fraction of object submerged between 0.0 and 1.0")
+    estimated_water_depth_m: float = Field(..., ge=0.0, le=10.0, description="Floodwater depth at the object in meters. Enforced as reference_standard_height_m * submerged_ratio.")
+    estimated_distance_from_camera_m: float = Field(..., ge=1.0, le=500.0, description="Estimated forward distance from camera in meters")
+    recommended_click_u: float = Field(..., ge=0.0, le=1.0, description="Normalized horizontal X position [0.0-1.0] of reference object")
+    recommended_click_v: float = Field(..., ge=0.0, le=1.0, description="Normalized vertical Y position [0.0-1.0] of waterline at object")
+    confidence_score: float = Field(..., ge=0.0, le=1.0, description="Confidence from 0.0 to 1.0")
     hydrological_reasoning: str = Field(..., description="Concise explanation of depth calculation")
+    depth_was_corrected: bool = Field(False, description="True if estimated_water_depth_m was recomputed as height * ratio because the supplied value disagreed")
+    submerged_ratio_source: str = Field("model_estimate", description="sam_mask_geometry if the ratio was measured from rasterized SAM mask pixels, else model_estimate")
+    sam_mask_pixel_count: Optional[int] = Field(None, ge=0, description="Pixel count of the reference object's SAM mask when submerged_ratio_source=sam_mask_geometry")
+
+    @model_validator(mode="after")
+    def _enforce_depth_equals_height_times_ratio(self):
+        # Depth is defined by the reference-object geometry, not a free estimate:
+        # depth = standard_height * submerged_ratio. A disagreeing supplied
+        # value is replaced and flagged, never silently averaged.
+        expected = round(float(self.reference_standard_height_m) * float(self.submerged_ratio), 2)
+        if abs(float(self.estimated_water_depth_m) - expected) > 0.01:
+            self.depth_was_corrected = True
+        self.estimated_water_depth_m = expected
+        return self
 
 
 class SAMMaskObject(BaseModel):
     id: str = Field(..., description="Unique mask identifier")
     concept: str = Field(..., description="Prompted concept name")
-    confidence: float = Field(..., description="Detection score from 0.0 to 1.0")
+    confidence: float = Field(..., ge=0.0, le=1.0, description="Detection score from 0.0 to 1.0")
     bbox_norm: List[float] = Field(..., description="Normalized [x_min, y_min, x_max, y_max] in [0.0, 1.0]")
     polygon_norm: List[List[float]] = Field(..., description="Normalized polygon vertices [[u, v], ...]")
-    submerged_ratio: Optional[float] = Field(None, description="Estimated submerged ratio if reference scale object")
-    standard_height_m: Optional[float] = Field(None, description="Standard height in meters if scale reference")
+    submerged_ratio: Optional[float] = Field(None, ge=0.0, le=1.0, description="Estimated submerged ratio if reference scale object")
+    standard_height_m: Optional[float] = Field(None, ge=0.1, le=10.0, description="Standard height in meters if scale reference")
+    mask_area_frac: Optional[float] = Field(None, ge=0.0, le=1.0, description="Rasterized mask area as fraction of image pixels (from mask geometry, not the bbox)")
+    pixel_count: Optional[int] = Field(None, ge=0, description="Rasterized mask pixel count at analysis resolution")
+    waterline_v: Optional[float] = Field(None, ge=0.0, le=1.0, description="For floodwater: topmost water pixel row as normalized v; per-object waterline v where computed")
+    geometry_source: Optional[str] = Field(None, description="sam_polygon (SAM mask polygon), sam_box (SAM box, rasterized), preset (calibrated fallback), or None")
 
 
 class AnalyzePhotoRequest(BaseModel):
@@ -49,14 +67,14 @@ class DeletePhotoRequest(BaseModel):
 
 
 class ProjectFloodRequest(BaseModel):
-    cam_lat: float = Field(..., description="Camera WGS84 latitude")
-    cam_lon: float = Field(..., description="Camera WGS84 longitude")
-    azimuth_deg: float = Field(..., description="Camera bearing in degrees [0-360]")
-    fov_deg: float = Field(65.0, description="Camera horizontal field of view in degrees")
-    click_u: float = Field(0.5, description="Normalized horizontal click position [0.0-1.0]")
-    est_distance_m: float = Field(38.0, description="Estimated forward distance from camera in meters")
-    water_depth_m: float = Field(1.35, description="Estimated floodwater depth at target in meters")
-    search_radius_m: float = Field(450.0, description="DEM catchment flood-fill radius in meters")
+    cam_lat: float = Field(..., ge=-90.0, le=90.0, description="Camera WGS84 latitude")
+    cam_lon: float = Field(..., ge=-180.0, le=180.0, description="Camera WGS84 longitude")
+    azimuth_deg: float = Field(..., ge=0.0, le=360.0, description="Camera bearing in degrees [0-360]")
+    fov_deg: float = Field(65.0, ge=10.0, le=120.0, description="Camera horizontal field of view in degrees")
+    click_u: float = Field(0.5, ge=0.0, le=1.0, description="Normalized horizontal click position [0.0-1.0]")
+    est_distance_m: float = Field(38.0, ge=1.0, le=500.0, description="Estimated forward distance from camera in meters")
+    water_depth_m: float = Field(1.35, ge=0.05, le=5.0, description="Estimated floodwater depth at target in meters")
+    search_radius_m: float = Field(450.0, ge=50.0, le=2000.0, description="DEM catchment flood-fill radius in meters")
     scenario_id: Optional[str] = Field(None, description="Optional scenario ID for naming")
     barangay: Optional[str] = Field("SAN JOSE", description="Target Barangay name")
 
@@ -96,6 +114,14 @@ class ProjectFloodResponse(BaseModel):
     profile_points: Optional[List[Dict[str, float]]] = None
     measured_depth_m: float
     water_surface_elev_m: float
+    wse_camera_anchored_m: Optional[float] = Field(None, description="Diagnostic only: WSE if anchored at camera ground (cam_ground + depth). NOT used for the flood extent; water_surface_elev_m follows SPEC (target ground + depth).")
+    wse_method: str = Field("spec_target_anchored", description="WSE used for the flood extent: WSE = DEM at target + water_depth_m")
+    dem_uncertainty_m: Optional[float] = Field(None, description="Plus/minus DEM vertical uncertainty band in meters (local 30 m window std-dev combined with a 0.5 m resampled-DSM floor)")
+    wse_low_m: Optional[float] = Field(None, description="water_surface_elev_m - dem_uncertainty_m")
+    wse_high_m: Optional[float] = Field(None, description="water_surface_elev_m + dem_uncertainty_m")
+    flood_area_low_sqm: Optional[float] = Field(None, description="Connected flood area recomputed at wse_low_m")
+    flood_area_high_sqm: Optional[float] = Field(None, description="Connected flood area recomputed at wse_high_m")
+    corridor_geojson: Optional[Dict[str, Any]] = Field(None, description="Observation corridor (camera-to-target buffer) as a separate layer. NOT part of the flood extent.")
     flood_area_sqm: float
     flood_geojson: Dict[str, Any]
     buildings_geojson: Dict[str, Any]
@@ -107,15 +133,16 @@ class ProjectFloodResponse(BaseModel):
 
 class TriageRouteRequest(BaseModel):
     scenario_id: str = Field("kasiglahan_village", description="Scenario identifier")
-    cam_lat: float = Field(..., description="Incident camera latitude")
-    cam_lon: float = Field(..., description="Incident camera longitude")
-    target_lat: float = Field(..., description="Projected flood point latitude")
-    target_lon: float = Field(..., description="Projected flood point longitude")
-    water_depth_m: float = Field(..., description="Measured flood depth in meters")
-    wse_m: float = Field(..., description="Water surface elevation in meters")
+    cam_lat: float = Field(..., ge=-90.0, le=90.0, description="Incident camera latitude")
+    cam_lon: float = Field(..., ge=-180.0, le=180.0, description="Incident camera longitude")
+    target_lat: float = Field(..., ge=-90.0, le=90.0, description="Projected flood point latitude")
+    target_lon: float = Field(..., ge=-180.0, le=180.0, description="Projected flood point longitude")
+    water_depth_m: float = Field(..., ge=0.05, le=5.0, description="Measured flood depth in meters")
+    wse_m: float = Field(..., ge=-100.0, le=9000.0, description="Water surface elevation in meters")
     barangay: str = Field("SAN JOSE", description="Barangay name")
-    max_passable_depth_m: float = Field(0.5, description="Maximum passable depth for rescue vehicle")
-    confidence_score: float = Field(0.91, description="Visual gauge confidence score")
+    flood_geojson: Optional[Dict[str, Any]] = Field(None, description="Flood extent GeoJSON (EPSG:4326) from /api/v1/project-flood. When supplied, triage reuses this exact polygon for building counts instead of recomputing a bathtub extent.")
+    max_passable_depth_m: float = Field(0.5, ge=0.0, le=5.0, description="Maximum passable depth for rescue vehicle")
+    confidence_score: float = Field(0.91, ge=0.0, le=1.0, description="Visual gauge confidence score")
 
 
 class AgentStepLog(BaseModel):
@@ -141,6 +168,10 @@ class DispatchTicket(BaseModel):
     is_evac_center: Optional[bool] = False
     evac_center_name: Optional[str] = None
     footprint_sqm: Optional[float] = None
+    building_lat: Optional[float] = Field(None, ge=-90.0, le=90.0, description="Building centroid latitude (WGS84)")
+    building_lon: Optional[float] = Field(None, ge=-180.0, le=180.0, description="Building centroid longitude (WGS84)")
+    depth_band: Optional[str] = Field(None, description="Rounded depth band for responders, e.g. '~2.6 m (critical, >1.5 m)' - never an exact depth")
+    map_url: Optional[str] = Field(None, description="OpenStreetMap link to the building location")
     flood_depth_m: float
     wse_m: float
     stranded_residents_est: Optional[int] = Field(
@@ -154,7 +185,7 @@ class DispatchTicket(BaseModel):
     generated_by_model: str = "muse-spark-1.1 (Meta API)"
 
 
-class OpenWeightTelemetry(BaseModel):
+class DispatchTelemetry(BaseModel):
     model_id: str
     provider: str
     endpoint: str
@@ -181,20 +212,20 @@ class TriageRouteResponse(BaseModel):
     inundated_structures: InundatedStructureSummary
     agent_steps: List[AgentStepLog]
     dispatch_tickets: List[DispatchTicket]
-    open_weight_telemetry: OpenWeightTelemetry
+    dispatch_telemetry: DispatchTelemetry
 
 
 class SurgeSimulationRequest(BaseModel):
     scenario_id: str = Field("kasiglahan_village", description="Scenario ID")
-    current_depth_m: float = Field(1.35, description="Current measured depth in meters")
-    surge_delta_m: float = Field(1.5, description="Additional typhoon surge in meters (+1.5m)")
+    current_depth_m: float = Field(1.35, ge=0.05, le=5.0, description="Current measured depth in meters")
+    surge_delta_m: float = Field(1.5, ge=0.0, le=5.0, description="Additional typhoon surge in meters (+1.5m)")
     barangay: str = Field("SAN JOSE", description="Barangay name")
-    cam_lat: float = Field(14.7498, description="Camera latitude")
-    cam_lon: float = Field(121.1372, description="Camera longitude")
-    azimuth_deg: float = Field(118.0, description="Camera azimuth")
-    fov_deg: float = Field(65.0, description="Camera FOV")
-    click_u: float = Field(0.52, description="Horizontal click u")
-    est_distance_m: float = Field(38.0, description="Distance from camera")
+    cam_lat: float = Field(14.7498, ge=-90.0, le=90.0, description="Camera latitude")
+    cam_lon: float = Field(121.1372, ge=-180.0, le=180.0, description="Camera longitude")
+    azimuth_deg: float = Field(118.0, ge=0.0, le=360.0, description="Camera azimuth")
+    fov_deg: float = Field(65.0, ge=10.0, le=120.0, description="Camera FOV")
+    click_u: float = Field(0.52, ge=0.0, le=1.0, description="Horizontal click u")
+    est_distance_m: float = Field(38.0, ge=1.0, le=500.0, description="Distance from camera")
 
 
 class SurgeSimulationResponse(BaseModel):

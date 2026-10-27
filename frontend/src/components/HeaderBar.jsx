@@ -8,6 +8,7 @@ export default function HeaderBar({
   triageLoading,
   projectionLoading,
   cameraParams,
+  analysisResult,
 }) {
   const summary = floodProjection?.inundated_structures || {
     barangay: cameraParams?.barangay || "SAN JOSE",
@@ -69,9 +70,9 @@ export default function HeaderBar({
             EPSG:32651
           </span>
 
-          <span className="status-pill positive" style={{ fontSize: "11px", height: "20px", padding: "0 6px" }}>
+          <span className={`status-pill ${analysisResult && !analysisResult.fallback_used && analysisResult.execution_mode === "live_inference" ? "positive" : "neutral"}`} style={{ fontSize: "11px", height: "20px", padding: "0 6px" }}>
             <Layers size={10} />
-            <span>SAM 3.1 + Muse Spark</span>
+            <span>{!analysisResult ? "SAM 3.1 + Muse Spark · Standby" : analysisResult.fallback_used ? "Calibrated baseline · Live unavailable" : analysisResult.cached || analysisResult.execution_mode === "cached" ? "SAM 3.1 + Muse Spark · Cached" : "SAM 3.1 + Muse Spark · Live"}</span>
           </span>
         </div>
 

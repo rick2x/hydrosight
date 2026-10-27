@@ -6,7 +6,7 @@ export default function TriageCopilot({ triageData, floodProjection, projectionL
 
   const steps = triageData?.agent_steps || [];
   const tickets = triageData?.dispatch_tickets || [];
-  const telemetry = triageData?.open_weight_telemetry || null;
+  const telemetry = triageData?.dispatch_telemetry || null;
 
   const handleDispatchToggle = (ticketId) => {
     setDispatchedIds((prev) => ({
@@ -30,7 +30,7 @@ export default function TriageCopilot({ triageData, floodProjection, projectionL
         >
           <div>
             <h2 style={{ fontSize: "15px", fontWeight: 600, margin: 0, color: "var(--text)" }}>
-              Step 3 · Autonomous triage state machine (Muse Spark 1.3)
+              Step 3 · Autonomous triage state machine
             </h2>
             <p style={{ margin: "2px 0 0 0", fontSize: "12.5px", color: "var(--muted)" }}>
               4-phase vision perception, DEM flood-fill, road graph routing & dispatch handoff
@@ -98,11 +98,11 @@ export default function TriageCopilot({ triageData, floodProjection, projectionL
         >
           <div>
             <h2 style={{ fontSize: "15px", fontWeight: 600, margin: 0, color: "var(--text)" }}>
-              Step 3 · Priority rescue dispatch queue (Muse Spark Dispatcher)
+              Step 3 · Priority rescue dispatch queue
             </h2>
             <p style={{ margin: "2px 0 0 0", fontSize: "12.5px", color: "var(--muted)" }}>
               {telemetry ? (
-                <>Provider: {telemetry.provider} · <span className="num">{telemetry.tokens_used} tokens</span> logged</>
+                <>Ticket formatter: {telemetry.provider} · <span className="num">{telemetry.tokens_used} tokens</span></>
               ) : (
                 "Multi-agent dispatch handoff standby"
               )}
@@ -166,6 +166,21 @@ export default function TriageCopilot({ triageData, floodProjection, projectionL
                         <div style={{ fontSize: "12px", color: "var(--muted)", marginTop: "2px" }}>
                           {t.tactical_directive}
                         </div>
+                        {t.building_lat != null && t.building_lon != null && (
+                          <div style={{ fontSize: "11.5px", marginTop: "3px" }}>
+                            <a
+                              href={t.map_url || `https://www.openstreetmap.org/?mlat=${t.building_lat}&mlon=${t.building_lon}#map=18/${t.building_lat}/${t.building_lon}`}
+                              target="_blank"
+                              rel="noreferrer"
+                              style={{ color: "var(--accent-strong, #0369a1)" }}
+                            >
+                              Map: {Number(t.building_lat).toFixed(6)}, {Number(t.building_lon).toFixed(6)}
+                            </a>
+                            <span style={{ color: "var(--muted)" }}> · model estimate — verify on arrival</span>
+                          </div>
+                        )}
+                        <div style={{ display: "none" }}>
+                        </div>
                       </td>
                       <td>
                         <span
@@ -179,7 +194,7 @@ export default function TriageCopilot({ triageData, floodProjection, projectionL
                       </td>
                       <td className="num">
                         <span style={{ fontWeight: 500, color: "var(--text)" }}>
-                          {t.flood_depth_m.toFixed(2)}
+                          {`~${t.flood_depth_m.toFixed(1)}`}
                         </span>{" "}
                         <span style={{ color: "var(--muted)", fontSize: "11.5px" }}>m</span>
                       </td>

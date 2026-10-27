@@ -258,6 +258,31 @@ export default function MapViewcone({
           },
         });
 
+        // Observation corridor: a separate layer, NOT flood extent
+        map.addSource("observation-corridor", {
+          type: "geojson",
+          data: floodProjection?.corridor_geojson || { type: "FeatureCollection", features: [] },
+        });
+        map.addLayer({
+          id: "observation-corridor-fill",
+          type: "fill",
+          source: "observation-corridor",
+          paint: {
+            "fill-color": "#7c3aed",
+            "fill-opacity": 0.12,
+          },
+        });
+        map.addLayer({
+          id: "observation-corridor-outline",
+          type: "line",
+          source: "observation-corridor",
+          paint: {
+            "line-color": "#7c3aed",
+            "line-width": 1.2,
+            "line-dasharray": [3, 3],
+          },
+        });
+
         map.addSource("buildings-source", {
           type: "geojson",
           data: floodProjection?.buildings_geojson || { type: "FeatureCollection", features: [] },
@@ -573,6 +598,7 @@ export default function MapViewcone({
     map.getSource("fov-viewcone")?.setData(viewconeGeojson);
     map.getSource("target-ray")?.setData(rayLineGeojson);
     map.getSource("flood-extent")?.setData(floodProjection?.flood_geojson || { type: "FeatureCollection", features: [] });
+    map.getSource("observation-corridor")?.setData(floodProjection?.corridor_geojson || { type: "FeatureCollection", features: [] });
     map.getSource("buildings-source")?.setData(floodProjection?.buildings_geojson || { type: "FeatureCollection", features: [] });
     map.getSource("rescue-route")?.setData(triageData?.route_geojson || { type: "FeatureCollection", features: [] });
     map.getSource("rescue-route-waypoints")?.setData(waypointsGeojson);
