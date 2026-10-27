@@ -1,4 +1,5 @@
 import React, { useEffect, useState, useCallback, useRef } from "react";
+import { RefreshCw } from "lucide-react";
 import HeaderBar from "./components/HeaderBar";
 import PhotoInspector from "./components/PhotoInspector";
 import MapViewcone from "./components/MapViewcone";
@@ -35,12 +36,16 @@ export default function App() {
     barangay: "SAN JOSE",
   });
 
+  // Guided 3-Step Pipeline State
+  const [activeStep, setActiveStep] = useState(1);
+  const [cameraPinPlaced, setCameraPinPlaced] = useState(false);
+
   const sliderTimerRef = useRef(null);
   const projAbortRef = useRef(null);
   const currentConfidence = analysisResult?.visual_gauge?.confidence_score ?? 0.91;
 
-  const runProjectionAndTriage = useCallback(
-    async (params, triggerTriage = true, showSpinner = false) => {
+  const runFloodProjection = useCallback(
+    async (params) => {
       setProjectionLoading(true);
       try {
         if (projAbortRef.current) {
@@ -69,46 +74,72 @@ export default function App() {
         if (projRes.ok) {
           const projData = await projRes.json();
           setFloodProjection(projData);
+          setCameraPinPlaced(true);
 
           const resolvedBrgy = projData.inundated_structures?.barangay || params.barangay;
           if (resolvedBrgy && resolvedBrgy !== params.barangay) {
             setCameraParams((prev) => ({ ...prev, barangay: resolvedBrgy }));
           }
-
-          if (triggerTriage) {
-            if (showSpinner) setTriageLoading(true);
-            const triRes = await fetch("/api/v1/triage-route", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                scenario_id: "live_operator",
-                cam_lat: params.cam_lat,
-                cam_lon: params.cam_lon,
-                target_lat: projData.target_lat,
-                target_lon: projData.target_lon,
-                water_depth_m: params.water_depth_m,
-                wse_m: projData.water_surface_elev_m,
-                barangay: resolvedBrgy,
-                max_passable_depth_m: 0.5,
-                confidence_score: currentConfidence,
-              }),
-            });
-            if (triRes.ok) {
-              setTriageData(await triRes.json());
-            }
-            setTriageLoading(false);
-          }
+          return projData;
         }
       } catch (err) {
-        if (err?.name !== "AbortError") {
-          setTriageLoading(false);
-        }
+        // Abort or network
       } finally {
         setProjectionLoading(false);
       }
+      return null;
     },
-    [currentConfidence]
+    []
   );
+
+  const runTriageDispatch = useCallback(
+    async (params, currentProj = null) => {
+      setTriageLoading(true);
+      try {
+        const proj = currentProj || floodProjection;
+        const resolvedBrgy = proj?.inundated_structures?.barangay || params.barangay || "SAN JOSE";
+        const targetLat = proj?.target_lat || params.cam_lat;
+        const targetLon = proj?.target_lon || params.cam_lon;
+        const wse = proj?.water_surface_elev_m || 24.5;
+
+        const triRes = await fetch("/api/v1/triage-route", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            scenario_id: "live_operator",
+            cam_lat: params.cam_lat,
+            cam_lon: params.cam_lon,
+            target_lat: targetLat,
+            target_lon: targetLon,
+            water_depth_m: params.water_depth_m,
+            wse_m: wse,
+            barangay: resolvedBrgy,
+            max_passable_depth_m: 0.5,
+            confidence_score: currentConfidence,
+          }),
+        });
+        if (triRes.ok) {
+          const data = await triRes.json();
+          setTriageData(data);
+        }
+      } catch (err) {
+        // Ignore
+      } finally {
+        setTriageLoading(false);
+      }
+    },
+    [floodProjection, currentConfidence]
+  );
+
+  const handleGoToStep = (step) => {
+    setActiveStep(step);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+
+    // When navigating to Step 3, trigger agent triage and dispatch!
+    if (step === 3) {
+      runTriageDispatch(cameraParams, floodProjection);
+    }
+  };
 
   const initApp = useCallback(async () => {
     setIsInitialLoading(true);
@@ -149,6 +180,10 @@ export default function App() {
       setPhotoUploading(true);
       setPhotoUploadError(null);
       setSurgeResult(null);
+      setFloodProjection(null);
+      setTriageData(null);
+      setCameraPinPlaced(false);
+      setAnalysisResult(null);
       if (customPhotoPreview && customPhotoPreview.startsWith("blob:")) {
         try {
           URL.revokeObjectURL(customPhotoPreview);
@@ -168,6 +203,10 @@ export default function App() {
           const resolvedBrgy = photoData.resolved_location?.barangay;
           const initParams = {
             ...cameraParams,
+            cam_lat: photoData.resolved_location?.cam_lat ?? cameraParams.cam_lat,
+            cam_lon: photoData.resolved_location?.cam_lon ?? cameraParams.cam_lon,
+            azimuth_deg: photoData.resolved_location?.azimuth_deg ?? cameraParams.azimuth_deg,
+            fov_deg: photoData.resolved_location?.fov_deg ?? cameraParams.fov_deg,
             barangay: resolvedBrgy || cameraParams.barangay,
             water_depth_m: photoData.visual_gauge?.estimated_water_depth_m ?? cameraParams.water_depth_m,
             est_distance_m: photoData.visual_gauge?.estimated_distance_from_camera_m ?? cameraParams.est_distance_m,
@@ -175,7 +214,6 @@ export default function App() {
             click_v: photoData.visual_gauge?.recommended_click_v ?? cameraParams.click_v,
           };
           setCameraParams(initParams);
-          runProjectionAndTriage(initParams, true, false);
         } else {
           setPhotoUploadError("Failed to load benchmark scenario.");
         }
@@ -185,7 +223,7 @@ export default function App() {
         setPhotoUploading(false);
       }
     },
-    [cameraParams, runProjectionAndTriage, customPhotoPreview]
+    [cameraParams, customPhotoPreview]
   );
 
   useEffect(() => {
@@ -200,9 +238,9 @@ export default function App() {
     const updated = { ...cameraParams, ...patch };
     setCameraParams(updated);
     if (sliderTimerRef.current) clearTimeout(sliderTimerRef.current);
-    if (floodProjection) {
+    if (cameraPinPlaced || floodProjection) {
       sliderTimerRef.current = setTimeout(() => {
-        runProjectionAndTriage(updated, true);
+        runFloodProjection(updated);
       }, 120);
     }
   };
@@ -210,13 +248,27 @@ export default function App() {
   const handleUpdateCameraCoords = (lat, lon) => {
     const updated = { ...cameraParams, cam_lat: lat, cam_lon: lon };
     setCameraParams(updated);
-    runProjectionAndTriage(updated, true);
+    setCameraPinPlaced(true);
+    runFloodProjection(updated);
+  };
+
+  const handleConfirmPin = (lat, lon) => {
+    const updated = {
+      ...cameraParams,
+      cam_lat: lat ?? cameraParams.cam_lat,
+      cam_lon: lon ?? cameraParams.cam_lon,
+    };
+    setCameraParams(updated);
+    setCameraPinPlaced(true);
+    runFloodProjection(updated);
   };
 
   const handlePhotoClickTarget = (normU, normV) => {
     const updated = { ...cameraParams, click_u: normU, click_v: normV };
     setCameraParams(updated);
-    runProjectionAndTriage(updated, true, true);
+    if (cameraPinPlaced || floodProjection) {
+      runFloodProjection(updated);
+    }
   };
 
   const handleUploadCustomPhoto = async (file) => {
@@ -225,8 +277,20 @@ export default function App() {
     setPhotoUploadError(null);
     setSurgeResult(null);
 
+    if (customPhotoPreview && customPhotoPreview.startsWith("blob:")) {
+      try {
+        URL.revokeObjectURL(customPhotoPreview);
+      } catch {}
+    }
+
     const localUrl = URL.createObjectURL(file);
     setCustomPhotoPreview(localUrl);
+
+    // Clear previous analysis and downstream projections immediately
+    setAnalysisResult(null);
+    setFloodProjection(null);
+    setTriageData(null);
+    setCameraPinPlaced(false);
 
     try {
       const formData = new FormData();
@@ -247,16 +311,16 @@ export default function App() {
         }
         setFloodProjection(null);
         setTriageData(null);
+        setCameraPinPlaced(false);
         const nextParams = {
           ...cameraParams,
           barangay: resolvedBrgy || cameraParams.barangay,
-          water_depth_m: data.visual_gauge.estimated_water_depth_m,
-          est_distance_m: data.visual_gauge.estimated_distance_from_camera_m,
-          click_u: data.visual_gauge.recommended_click_u,
-          click_v: data.visual_gauge.recommended_click_v,
+          water_depth_m: data.visual_gauge?.estimated_water_depth_m ?? cameraParams.water_depth_m,
+          est_distance_m: data.visual_gauge?.estimated_distance_from_camera_m ?? cameraParams.est_distance_m,
+          click_u: data.visual_gauge?.recommended_click_u ?? cameraParams.click_u,
+          click_v: data.visual_gauge?.recommended_click_v ?? cameraParams.click_v,
         };
         setCameraParams(nextParams);
-        runProjectionAndTriage(nextParams, true, false);
       } else {
         setPhotoUploadError(`Upload analysis failed (${res.status}). Using local photo preview.`);
       }
@@ -293,6 +357,8 @@ export default function App() {
     setAnalysisResult(null);
     setFloodProjection(null);
     setTriageData(null);
+    setCameraPinPlaced(false);
+    setActiveStep(1);
   };
 
   const handleSimulateSurge = async () => {
@@ -361,11 +427,7 @@ export default function App() {
           floodProjection={floodProjection}
           triageData={triageData}
           onRunTriage={() => {
-            if (analysisResult || customPhotoPreview) {
-              runProjectionAndTriage(cameraParams, true, true);
-            } else {
-              handleLoadSampleScenario("kasiglahan_village");
-            }
+            handleGoToStep(3);
           }}
           triageLoading={triageLoading}
           projectionLoading={projectionLoading}
@@ -481,8 +543,111 @@ export default function App() {
           </div>
         </section>
 
-        {/* Dual Operational Workbench */}
-        <div className="workbench-split">
+        {/* Operational 3-Step Guided Workflow Deck */}
+        <section aria-label="Operational 3-Step Workflow Pipeline" style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "8px" }}>
+            <span style={{ fontSize: "12px", fontWeight: 600, color: "var(--text)", letterSpacing: "0.01em" }}>
+              Operational triage pipeline (Step {activeStep} of 3):
+            </span>
+            <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+              {activeStep > 1 && (
+                <button
+                  type="button"
+                  className="btn-secondary"
+                  onClick={() => handleGoToStep(activeStep - 1)}
+                  style={{ height: "26px", fontSize: "11.5px", padding: "0 9px" }}
+                >
+                  ← Back to Step {activeStep - 1}
+                </button>
+              )}
+              {activeStep < 3 && (
+                <button
+                  type="button"
+                  className="btn-primary"
+                  onClick={() => handleGoToStep(activeStep + 1)}
+                  disabled={activeStep === 1 && !analysisResult && !customPhotoPreview}
+                  style={{ height: "26px", fontSize: "11.5px", padding: "0 10px" }}
+                >
+                  Proceed to Step {activeStep + 1} →
+                </button>
+              )}
+            </div>
+          </div>
+
+          <div className="pipeline-deck">
+            {/* Step 1 */}
+            <div
+              className={`pipeline-step ${activeStep === 1 ? "active" : ""}`}
+              onClick={() => handleGoToStep(1)}
+              role="button"
+              tabIndex={0}
+              onKeyDown={(e) => e.key === "Enter" && handleGoToStep(1)}
+            >
+              <div className="pipeline-step-header">
+                <span className="pipeline-step-title">
+                  01 · Street Photo & Perception
+                </span>
+                <span className={`status-pill ${analysisResult ? "positive" : "neutral"}`} style={{ height: "18px", fontSize: "10.5px" }}>
+                  {analysisResult ? "Calibrated" : "Step 1"}
+                </span>
+              </div>
+              <span className="pipeline-step-desc">
+                {analysisResult
+                  ? `Target u=${cameraParams.click_u.toFixed(2)} · ${cameraParams.water_depth_m.toFixed(2)}m water depth`
+                  : "Upload street flood photo or load benchmark sample"}
+              </span>
+            </div>
+
+            {/* Step 2 */}
+            <div
+              className={`pipeline-step ${activeStep === 2 ? "active" : ""}`}
+              onClick={() => handleGoToStep(2)}
+              role="button"
+              tabIndex={0}
+              onKeyDown={(e) => e.key === "Enter" && handleGoToStep(2)}
+            >
+              <div className="pipeline-step-header">
+                <span className="pipeline-step-title">
+                  02 · Viewcone & 3D Mapping
+                </span>
+                <span className={`status-pill ${floodProjection ? "positive" : "neutral"}`} style={{ height: "18px", fontSize: "10.5px" }}>
+                  {floodProjection ? "Projected" : "Step 2"}
+                </span>
+              </div>
+              <span className="pipeline-step-desc">
+                {floodProjection
+                  ? `Azimuth ${cameraParams.azimuth_deg}° · FOV ${cameraParams.fov_deg}° · WSE ${floodProjection.water_surface_elev_m.toFixed(2)}m MSL`
+                  : "Rotate azimuth & FOV down street to cast DEM ray"}
+              </span>
+            </div>
+
+            {/* Step 3 */}
+            <div
+              className={`pipeline-step ${activeStep === 3 ? "active" : ""}`}
+              onClick={() => handleGoToStep(3)}
+              role="button"
+              tabIndex={0}
+              onKeyDown={(e) => e.key === "Enter" && handleGoToStep(3)}
+            >
+              <div className="pipeline-step-header">
+                <span className="pipeline-step-title">
+                  03 · Agent Triage & Dispatch
+                </span>
+                <span className={`status-pill ${triageData ? "positive" : "neutral"}`} style={{ height: "18px", fontSize: "10.5px" }}>
+                  {triageData ? "Dispatched" : "Step 3"}
+                </span>
+              </div>
+              <span className="pipeline-step-desc">
+                {triageData
+                  ? `Corridor active (${Math.round(triageData.route_distance_m)}m) · ${triageData.dispatch_tickets?.length || 0} tickets`
+                  : "Sever flooded road network & queue tickets"}
+              </span>
+            </div>
+          </div>
+        </section>
+
+        {/* Step-by-Step Viewport: Only active step is shown */}
+        <div style={{ display: activeStep === 1 ? "flex" : "none", flexDirection: "column", gap: "12px" }}>
           <PhotoInspector
             analysisResult={analysisResult}
             cameraParams={cameraParams}
@@ -502,6 +667,25 @@ export default function App() {
             projectionLoading={projectionLoading}
           />
 
+          <div className="step-advance-bar" style={{ padding: "12px 16px" }}>
+            <span style={{ color: "var(--muted)", fontSize: "13px" }}>
+              {analysisResult
+                ? `Photo calibrated (u=${cameraParams.click_u.toFixed(2)}, depth=${cameraParams.water_depth_m.toFixed(2)}m). Ready to align viewcone on 3D map.`
+                : "Awaiting photo input. Upload photo or click 'Load sample benchmark' above to begin."}
+            </span>
+            <button
+              type="button"
+              className="btn-primary"
+              disabled={!analysisResult && !customPhotoPreview}
+              onClick={() => handleGoToStep(2)}
+              style={{ fontSize: "13px", height: "32px", padding: "0 14px" }}
+            >
+              <span>Proceed to Step 2: 3D Mapping & Viewcone →</span>
+            </button>
+          </div>
+        </div>
+
+        <div style={{ display: activeStep === 2 ? "flex" : "none", flexDirection: "column", gap: "12px" }}>
           <MapViewcone
             cameraParams={cameraParams}
             floodProjection={floodProjection}
@@ -509,18 +693,137 @@ export default function App() {
             boundaryGeojson={boundaryGeojson}
             evacCentersGeojson={evacCentersGeojson}
             onUpdateCameraCoords={handleUpdateCameraCoords}
+            onUpdateCameraParams={handleUpdateCameraParams}
+            cameraPinPlaced={cameraPinPlaced}
+            onConfirmPin={handleConfirmPin}
+            activeStep={activeStep}
             projectionLoading={projectionLoading}
             triageLoading={triageLoading}
           />
+
+          <div className="step-advance-bar" style={{ padding: "12px 16px" }}>
+            <button
+              type="button"
+              className="btn-secondary"
+              onClick={() => handleGoToStep(1)}
+              style={{ fontSize: "12.5px", height: "32px", padding: "0 12px" }}
+            >
+              <span>← Back to Step 1: Photo</span>
+            </button>
+            <span style={{ color: "var(--muted)", fontSize: "13px" }}>
+              {floodProjection
+                ? `WSE at ${floodProjection.water_surface_elev_m.toFixed(2)} m MSL submerges ${summary.affected_structures} structures. Ready to dispatch rescue.`
+                : cameraPinPlaced
+                ? "3D topographic viewcone calculated. Ready to dispatch."
+                : "Point or confirm camera pin location on map to calculate 3D flood."}
+            </span>
+            <button
+              type="button"
+              className="btn-primary"
+              disabled={!cameraPinPlaced && !floodProjection}
+              onClick={() => handleGoToStep(3)}
+              style={{ fontSize: "13px", height: "32px", padding: "0 14px" }}
+            >
+              <span>Proceed to Step 3: Agent Triage & Dispatch →</span>
+            </button>
+          </div>
         </div>
 
-        {/* Bottom Drawer: Multi-Agent State Machine & Dispatch Queue */}
-        <TriageCopilot
-          triageData={triageData}
-          floodProjection={floodProjection}
-          projectionLoading={projectionLoading}
-          triageLoading={triageLoading}
-        />
+        <div style={{ display: activeStep === 3 ? "flex" : "none", flexDirection: "column", gap: "12px" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "8px", padding: "4px 2px" }}>
+            <span style={{ fontSize: "12.5px", color: "var(--muted)", fontWeight: 500 }}>
+              Step 3 of 3 · Autonomous spatial agent reasoning, road severance & rescue dispatch queue
+            </span>
+            <button
+              type="button"
+              className="btn-secondary"
+              disabled={triageLoading}
+              onClick={() => handleGoToStep(3)}
+              style={{ fontSize: "12px", height: "30px", padding: "0 12px" }}
+            >
+              <RefreshCw size={12} className={triageLoading ? "spin" : ""} />
+              <span>{triageLoading ? "Analyzing..." : "Re-run Triage"}</span>
+            </button>
+          </div>
+
+          {/* Prominent High-Craft Loading State when Triage is Triggered */}
+          {triageLoading && (
+            <div
+              style={{
+                padding: "36px 20px",
+                borderRadius: "var(--radius-card)",
+                backgroundColor: "var(--surface)",
+                border: "1px solid var(--border)",
+                display: "flex",
+                flexDirection: "column",
+                alignItems: "center",
+                justifyContent: "center",
+                gap: "14px",
+                textAlign: "center",
+                minHeight: "240px",
+              }}
+            >
+              <RefreshCw size={32} className="spin" color="var(--accent)" />
+              <div>
+                <h3 style={{ margin: "0 0 6px 0", fontSize: "16px", fontWeight: 600, color: "var(--text)" }}>
+                  Triggering Autonomous Agent Triage & Dispatch...
+                </h3>
+                <p style={{ margin: 0, fontSize: "13px", color: "var(--muted)", maxWidth: "560px", lineHeight: 1.45 }}>
+                  Muse Spark 1.3 is loading the Rodriguez road network graph, clipping severed segments where floodwater depth exceeds 0.5 m, computing the shortest safe corridor to nearest evacuation centers, and batching building dispatch tickets for Muse Glimmer.
+                </p>
+              </div>
+              <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", justifyContent: "center" }}>
+                <span className="status-pill neutral num" style={{ fontSize: "11px" }}>
+                  OSMnx Road Graph: 1,842 nodes
+                </span>
+                <span className="status-pill neutral num" style={{ fontSize: "11px" }}>
+                  Max Passable Depth: 0.50 m
+                </span>
+                <span className="status-pill positive num" style={{ fontSize: "11px" }}>
+                  Muse Spark 1.3 + Muse Glimmer Active
+                </span>
+              </div>
+            </div>
+          )}
+
+          <TriageCopilot
+            triageData={triageData}
+            floodProjection={floodProjection}
+            projectionLoading={projectionLoading}
+            triageLoading={triageLoading}
+          />
+
+          <div className="step-advance-bar" style={{ padding: "12px 16px" }}>
+            <button
+              type="button"
+              className="btn-secondary"
+              onClick={() => handleGoToStep(2)}
+              style={{ fontSize: "12.5px", height: "32px", padding: "0 12px" }}
+            >
+              <span>← Back to Step 2: 3D Mapping</span>
+            </button>
+            <span style={{ color: "var(--muted)", fontSize: "13px" }}>
+              {triageData
+                ? `Corridor active: ${Math.round(triageData.route_distance_m)} m to ${triageData.evacuation_center_name || "Evacuation Center"}. ${triageData.dispatch_tickets?.length || 0} tickets queued.`
+                : "Computing autonomous triage..."}
+            </span>
+            <a
+              href={floodProjection ? `/api/v1/download-shp/${floodProjection?.run_id || "live_incident"}` : "#"}
+              download={floodProjection ? `rodriguez_flood_extent_${floodProjection?.run_id || "live_incident"}.zip` : undefined}
+              className="btn-primary"
+              style={{
+                fontSize: "13px",
+                height: "32px",
+                padding: "0 14px",
+                textDecoration: "none",
+                display: "inline-flex",
+                alignItems: "center",
+              }}
+            >
+              <span>Export Certified .SHP Package</span>
+            </a>
+          </div>
+        </div>
       </main>
     </div>
   );

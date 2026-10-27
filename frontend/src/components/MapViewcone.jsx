@@ -36,6 +36,10 @@ export default function MapViewcone({
   boundaryGeojson,
   evacCentersGeojson,
   onUpdateCameraCoords,
+  onUpdateCameraParams,
+  cameraPinPlaced = true,
+  onConfirmPin,
+  activeStep = 2,
   projectionLoading = false,
   triageLoading = false,
 }) {
@@ -46,11 +50,32 @@ export default function MapViewcone({
   const evacMarkerRef = useRef(null);
   const onUpdateCoordsRef = useRef(onUpdateCameraCoords);
   const [mapReady, setMapReady] = useState(false);
-  const [isCameraLocked, setIsCameraLocked] = useState(true);
-  const isCameraLockedRef = useRef(true);
+  const [isCameraLocked, setIsCameraLocked] = useState(cameraPinPlaced);
+  const isCameraLockedRef = useRef(cameraPinPlaced);
   const buildingClickHandledRef = useRef(false);
   const hasInitialFlownRef = useRef(false);
   const hasRouteFlownRef = useRef(false);
+
+  useEffect(() => {
+    if (!cameraPinPlaced) {
+      setIsCameraLocked(false);
+      isCameraLockedRef.current = false;
+      if (cameraMarkerRef.current) {
+        cameraMarkerRef.current.setDraggable(true);
+      }
+    }
+  }, [cameraPinPlaced]);
+
+  useEffect(() => {
+    if (activeStep === 2 && mapRef.current) {
+      const timer = setTimeout(() => {
+        try {
+          mapRef.current.resize();
+        } catch {}
+      }, 60);
+      return () => clearTimeout(timer);
+    }
+  }, [activeStep]);
 
   const routeFeatures = triageData?.route_geojson?.features;
   const routeCoords = useMemo(() => {
@@ -619,6 +644,11 @@ export default function MapViewcone({
   const wse = floodProjection?.water_surface_elev_m ?? Number((groundDem + waterDepth).toFixed(2));
   const targetLat = floodProjection?.target_lat ?? 14.74964;
   const targetLon = floodProjection?.target_lon ?? 121.13751;
+  const clickU = cameraParams.click_u ?? 0.5;
+  const targetBearingDeg = (
+    ((cameraParams.azimuth_deg ?? 118) + (clickU - 0.5) * (cameraParams.fov_deg ?? 65) + 360) %
+    360
+  ).toFixed(1);
   const summary = floodProjection?.inundated_structures || {
     barangay: cameraParams.barangay || "SAN JOSE",
     total_structures: 2797,
@@ -649,7 +679,7 @@ export default function MapViewcone({
         <div>
           <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
             <h2 style={{ fontSize: "15px", fontWeight: 600, margin: 0, color: "var(--text)" }}>
-              3D hydro-spatial terrain & rescue corridor
+              Step 2 · 3D hydro-spatial terrain & rescue corridor
             </h2>
             {isMapComputing && (
               <span
@@ -724,6 +754,176 @@ export default function MapViewcone({
         </div>
       </div>
 
+      {/* Step 2: Camera Station & Viewcone Frustum Calibration Deck */}
+      <div className="camera-station-bar">
+        {/* Azimuth Bearing Control */}
+        <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: "12px", flexWrap: "wrap", gap: "4px" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+              <label htmlFor="map-slider-azimuth" style={{ fontWeight: 600, color: "var(--text)" }}>
+                Azimuth heading (α)
+              </label>
+              <span className="num" style={{ fontWeight: 700, color: "var(--text)" }}>
+                {cameraParams.azimuth_deg}°
+              </span>
+              <span style={{ fontSize: "11px", color: "var(--muted)" }}>
+                (Ray θ = <span className="num">{targetBearingDeg}°</span>)
+              </span>
+            </div>
+
+            {/* Quick Cardinal Snaps */}
+            <div style={{ display: "flex", alignItems: "center", gap: "3px" }}>
+              {[
+                { label: "N", deg: 0 },
+                { label: "E", deg: 90 },
+                { label: "S", deg: 180 },
+                { label: "W", deg: 270 },
+              ].map((c) => (
+                <button
+                  key={c.label}
+                  type="button"
+                  className={`cardinal-btn ${Math.abs(cameraParams.azimuth_deg - c.deg) < 5 ? "active" : ""}`}
+                  onClick={() => onUpdateCameraParams && onUpdateCameraParams({ azimuth_deg: c.deg })}
+                  title={`Snap camera heading ${c.label} (${c.deg}°)`}
+                >
+                  {c.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <input
+            id="map-slider-azimuth"
+            type="range"
+            min="0"
+            max="360"
+            step="1"
+            value={cameraParams.azimuth_deg}
+            onChange={(e) => onUpdateCameraParams && onUpdateCameraParams({ azimuth_deg: Number(e.target.value) })}
+          />
+        </div>
+
+        {/* Horizontal FOV Aperture Control */}
+        <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: "12px", flexWrap: "wrap", gap: "4px" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+              <label htmlFor="map-slider-fov" style={{ fontWeight: 600, color: "var(--text)" }}>
+                Horizontal FOV aperture
+              </label>
+              <span className="num" style={{ fontWeight: 700, color: "var(--text)" }}>
+                {cameraParams.fov_deg}°
+              </span>
+            </div>
+
+            {/* Quick FOV Presets */}
+            <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
+              {[
+                { label: "50° Narrow", fov: 50 },
+                { label: "65° Standard", fov: 65 },
+                { label: "80° Wide", fov: 80 },
+              ].map((p) => (
+                <button
+                  key={p.fov}
+                  type="button"
+                  className={`cardinal-btn ${cameraParams.fov_deg === p.fov ? "active" : ""}`}
+                  onClick={() => onUpdateCameraParams && onUpdateCameraParams({ fov_deg: p.fov })}
+                >
+                  {p.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <input
+            id="map-slider-fov"
+            type="range"
+            min="40"
+            max="90"
+            step="1"
+            value={cameraParams.fov_deg}
+            onChange={(e) => onUpdateCameraParams && onUpdateCameraParams({ fov_deg: Number(e.target.value) })}
+          />
+        </div>
+
+        {/* Flood Water Depth Control (Migrated to Step 2) */}
+        <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: "12px", flexWrap: "wrap", gap: "4px" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+              <label htmlFor="map-slider-depth" style={{ fontWeight: 600, color: "var(--text)" }}>
+                Flood water depth (h_w)
+              </label>
+              <span className="num" style={{ fontWeight: 700, color: "var(--text)" }}>
+                {cameraParams.water_depth_m.toFixed(2)} m
+              </span>
+            </div>
+
+            {/* Quick Depth Presets */}
+            <div style={{ display: "flex", alignItems: "center", gap: "3px" }}>
+              {[
+                { label: "0.5m", val: 0.5 },
+                { label: "0.85m", val: 0.85 },
+                { label: "1.35m", val: 1.35 },
+                { label: "2.1m", val: 2.1 },
+              ].map((p) => (
+                <button
+                  key={p.val}
+                  type="button"
+                  className={`cardinal-btn ${Math.abs(cameraParams.water_depth_m - p.val) < 0.04 ? "active" : ""}`}
+                  onClick={() => onUpdateCameraParams && onUpdateCameraParams({ water_depth_m: p.val })}
+                  title={`Set water depth to ${p.val}m`}
+                >
+                  {p.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <input
+            id="map-slider-depth"
+            type="range"
+            min="0.2"
+            max="3.5"
+            step="0.05"
+            value={cameraParams.water_depth_m}
+            onChange={(e) => onUpdateCameraParams && onUpdateCameraParams({ water_depth_m: Number(e.target.value) })}
+          />
+        </div>
+      </div>
+
+      {/* Camera Pin Location Directive Banner */}
+      {!cameraPinPlaced && (
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            gap: "12px",
+            padding: "9px 14px",
+            borderRadius: "6px",
+            backgroundColor: "var(--accent-soft)",
+            border: "1px solid var(--border)",
+            color: "var(--text)",
+            fontSize: "12.5px",
+            flexWrap: "wrap",
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+            <MapPin size={16} color="var(--accent)" />
+            <span>
+              <strong>Point photo location:</strong> Click anywhere on the map or drag the camera pin to set where this street flood photo was taken.
+            </span>
+          </div>
+          <button
+            type="button"
+            className="btn-primary"
+            onClick={() => onConfirmPin && onConfirmPin(cameraParams.cam_lat, cameraParams.cam_lon)}
+            style={{ height: "26px", fontSize: "12px", padding: "0 10px" }}
+          >
+            Confirm Pin & Project 3D Flood
+          </button>
+        </div>
+      )}
+
       {/* Streamlined Infrastructure Impact Strip (No wrapping clutter) */}
       <div
         style={{
@@ -778,7 +978,7 @@ export default function MapViewcone({
           position: "relative",
           width: "100%",
           aspectRatio: "16 / 9",
-          maxHeight: "410px",
+          maxHeight: "480px",
           borderRadius: "6px",
           overflow: "hidden",
           border: "1px solid var(--border)",

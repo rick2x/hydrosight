@@ -30,7 +30,7 @@ export default function TriageCopilot({ triageData, floodProjection, projectionL
         >
           <div>
             <h2 style={{ fontSize: "15px", fontWeight: 600, margin: 0, color: "var(--text)" }}>
-              Autonomous triage state machine (Muse Spark 1.3)
+              Step 3 · Autonomous triage state machine (Muse Spark 1.3)
             </h2>
             <p style={{ margin: "2px 0 0 0", fontSize: "12.5px", color: "var(--muted)" }}>
               4-phase vision perception, DEM flood-fill, road graph routing & dispatch handoff
@@ -98,7 +98,7 @@ export default function TriageCopilot({ triageData, floodProjection, projectionL
         >
           <div>
             <h2 style={{ fontSize: "15px", fontWeight: 600, margin: 0, color: "var(--text)" }}>
-              Priority rescue dispatch queue (Muse Spark Dispatcher)
+              Step 3 · Priority rescue dispatch queue (Muse Spark Dispatcher)
             </h2>
             <p style={{ margin: "2px 0 0 0", fontSize: "12.5px", color: "var(--muted)" }}>
               {telemetry ? (

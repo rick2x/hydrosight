@@ -51,12 +51,16 @@ export default function PhotoInspector({
     }
   };
 
-  const masks = analysisResult?.masks || scenario?.sam_masks || [];
-  const gauge = analysisResult?.visual_gauge || scenario?.visual_gauge || {};
+  const masks = photoUploading
+    ? []
+    : (analysisResult?.masks || (isCustomPhoto ? [] : scenario?.sam_masks) || []);
+  const gauge = photoUploading
+    ? {}
+    : (analysisResult?.visual_gauge || (isCustomPhoto ? {} : scenario?.visual_gauge) || {});
   const photoUrl =
     customPhotoPreview ||
     analysisResult?.photo_url ||
-    scenario?.photo_url ||
+    (isCustomPhoto ? null : scenario?.photo_url) ||
     null;
 
   const angleOffsetDeg = ((cameraParams.click_u - 0.5) * cameraParams.fov_deg).toFixed(1);
@@ -114,7 +118,7 @@ export default function PhotoInspector({
         <div>
           <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
             <h2 style={{ fontSize: "15px", fontWeight: 600, margin: 0, color: "var(--text)" }}>
-              Street-level perception (SAM 3.1 + Muse Spark 1.3)
+              Step 1 · Street-level perception (SAM 3.1 + Muse Spark 1.3)
             </h2>
             {isCustomPhoto ? (
               <span className="status-badge status-warning">
@@ -140,7 +144,7 @@ export default function PhotoInspector({
         </div>
 
         <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
-          {photoUrl && (
+          {photoUrl && !photoUploading && masks.length > 0 && (
             <button
               type="button"
               className="btn-secondary"
@@ -332,7 +336,7 @@ export default function PhotoInspector({
           style={{
             position: "relative",
             aspectRatio: `${imgAspect}`,
-            maxHeight: "410px",
+            maxHeight: "480px",
             maxWidth: "100%",
             width: imgAspect >= 1.2 ? "100%" : "auto",
             cursor: "crosshair",
@@ -354,6 +358,33 @@ export default function PhotoInspector({
               display: "block",
             }}
           />
+
+          {/* Photo perception analyzing indicator */}
+          {photoUploading && (
+            <div
+              style={{
+                position: "absolute",
+                top: "12px",
+                left: "50%",
+                transform: "translateX(-50%)",
+                backgroundColor: "rgba(15, 23, 42, 0.90)",
+                color: "#38bdf8",
+                padding: "6px 14px",
+                borderRadius: "20px",
+                fontSize: "12px",
+                fontWeight: 600,
+                display: "flex",
+                alignItems: "center",
+                gap: "8px",
+                pointerEvents: "none",
+                zIndex: 7,
+                whiteSpace: "nowrap",
+              }}
+            >
+              <RefreshCw size={13} className="spin" />
+              <span>Analyzing photo perception with SAM 3.1 &amp; Muse Spark...</span>
+            </div>
+          )}
 
           {/* Standby prompt banner */}
           {!floodProjection && !photoUploading && !projectionLoading && (
@@ -444,7 +475,7 @@ export default function PhotoInspector({
               pointerEvents: "none",
             }}
           >
-            {showMasks &&
+            {showMasks && !photoUploading &&
               masks.map((m) => {
                 const style = MASK_STROKES[m.concept] || {
                   stroke: "#0e7490",
@@ -496,140 +527,72 @@ export default function PhotoInspector({
                 );
               })}
 
-            {/* Vertical Ray Bearing Indicator Line */}
-            <line
-              x1={cameraParams.click_u * 1000}
-              y1={0}
-              x2={cameraParams.click_u * 1000}
-              y2={562.5}
-              stroke="#0f172a"
-              strokeWidth="1.6"
-              strokeDasharray="4,4"
-            />
+            {/* Vertical Ray Bearing Indicator Line & Waterline Crosshair */}
+            {!photoUploading && (
+              <>
+                <line
+                  x1={cameraParams.click_u * 1000}
+                  y1={0}
+                  x2={cameraParams.click_u * 1000}
+                  y2={562.5}
+                  stroke="#0f172a"
+                  strokeWidth="1.6"
+                  strokeDasharray="4,4"
+                />
 
-            {/* Waterline Crosshair */}
-            <circle
-              cx={cameraParams.click_u * 1000}
-              cy={cameraParams.click_v * 562.5}
-              r="10"
-              fill="rgba(255, 255, 255, 0.9)"
-              stroke="#b91c1c"
-              strokeWidth="2"
-            />
-            <circle
-              cx={cameraParams.click_u * 1000}
-              cy={cameraParams.click_v * 562.5}
-              r="3"
-              fill="#b91c1c"
-            />
+                <circle
+                  cx={cameraParams.click_u * 1000}
+                  cy={cameraParams.click_v * 562.5}
+                  r="10"
+                  fill="rgba(255, 255, 255, 0.9)"
+                  stroke="#b91c1c"
+                  strokeWidth="2"
+                />
+                <circle
+                  cx={cameraParams.click_u * 1000}
+                  cy={cameraParams.click_v * 562.5}
+                  r="3"
+                  fill="#b91c1c"
+                />
+              </>
+            )}
           </svg>
         </div>
 
         {/* Bottom HUD Telemetry Strip */}
-        <div
-          style={{
-            position: "absolute",
-            left: "8px",
-            bottom: "8px",
-            backgroundColor: "rgba(255, 255, 255, 0.94)",
-            border: "1px solid var(--border)",
-            borderRadius: "4px",
-            padding: "3px 8px",
-            fontSize: "12px",
-            color: "var(--text)",
-            display: "flex",
-            alignItems: "center",
-            gap: "8px",
-            flexWrap: "wrap",
-            zIndex: 5,
-          }}
-        >
-          <span style={{ display: "inline-flex", alignItems: "center", gap: "4px", fontWeight: 500 }}>
-            <Crosshair size={12} color="var(--accent)" />
-            Target u = <span className="mono-id">{cameraParams.click_u.toFixed(2)}</span>
-          </span>
-          <span style={{ color: "var(--muted)" }}>
-            Δθ = <span className="num">{angleOffsetDeg}°</span>
-          </span>
-          <span style={{ color: "var(--muted)" }}>
-            Bearing = <span className="num">{targetBearingDeg}°</span>
-          </span>
-        </div>
+        {!photoUploading && (
+          <div
+            style={{
+              position: "absolute",
+              left: "8px",
+              bottom: "8px",
+              backgroundColor: "rgba(255, 255, 255, 0.94)",
+              border: "1px solid var(--border)",
+              borderRadius: "4px",
+              padding: "3px 8px",
+              fontSize: "12px",
+              color: "var(--text)",
+              display: "flex",
+              alignItems: "center",
+              gap: "8px",
+              flexWrap: "wrap",
+              zIndex: 5,
+            }}
+          >
+            <span style={{ display: "inline-flex", alignItems: "center", gap: "4px", fontWeight: 500 }}>
+              <Crosshair size={12} color="var(--accent)" />
+              Target u = <span className="mono-id">{cameraParams.click_u.toFixed(2)}</span>
+            </span>
+            <span style={{ color: "var(--muted)" }}>
+              Δθ = <span className="num">{angleOffsetDeg}°</span>
+            </span>
+            <span style={{ color: "var(--muted)" }}>
+              Bearing = <span className="num">{targetBearingDeg}°</span>
+            </span>
+          </div>
+        )}
       </div>
       )}
-
-      {/* Compact Camera Calibration & Depth Override Sliders */}
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
-          gap: "12px",
-          padding: "10px 12px",
-          backgroundColor: "var(--raised)",
-          borderRadius: "6px",
-          border: "1px solid var(--border)",
-        }}
-      >
-        <div>
-          <div style={{ display: "flex", justifyContent: "space-between", fontSize: "12px", marginBottom: "3px" }}>
-            <label htmlFor="slider-azimuth" style={{ fontWeight: 500, color: "var(--text)" }}>
-              Azimuth
-            </label>
-            <span className="num" style={{ color: "var(--muted)" }}>
-              {cameraParams.azimuth_deg}°
-            </span>
-          </div>
-          <input
-            id="slider-azimuth"
-            type="range"
-            min="0"
-            max="360"
-            step="1"
-            value={cameraParams.azimuth_deg}
-            onChange={(e) => onUpdateCameraParams({ azimuth_deg: Number(e.target.value) })}
-          />
-        </div>
-
-        <div>
-          <div style={{ display: "flex", justifyContent: "space-between", fontSize: "12px", marginBottom: "3px" }}>
-            <label htmlFor="slider-fov" style={{ fontWeight: 500, color: "var(--text)" }}>
-              Horizontal FOV
-            </label>
-            <span className="num" style={{ color: "var(--muted)" }}>
-              {cameraParams.fov_deg}°
-            </span>
-          </div>
-          <input
-            id="slider-fov"
-            type="range"
-            min="40"
-            max="90"
-            step="1"
-            value={cameraParams.fov_deg}
-            onChange={(e) => onUpdateCameraParams({ fov_deg: Number(e.target.value) })}
-          />
-        </div>
-
-        <div>
-          <div style={{ display: "flex", justifyContent: "space-between", fontSize: "12px", marginBottom: "3px" }}>
-            <label htmlFor="slider-depth" style={{ fontWeight: 500, color: "var(--text)" }}>
-              Water depth
-            </label>
-            <span className="num" style={{ color: "var(--text)", fontWeight: 600 }}>
-              {cameraParams.water_depth_m.toFixed(2)} m
-            </span>
-          </div>
-          <input
-            id="slider-depth"
-            type="range"
-            min="0.2"
-            max="3.5"
-            step="0.05"
-            value={cameraParams.water_depth_m}
-            onChange={(e) => onUpdateCameraParams({ water_depth_m: Number(e.target.value) })}
-          />
-        </div>
-      </div>
 
       {/* Visual Hydrological Gauge Telemetry */}
       <div
@@ -649,11 +612,15 @@ export default function PhotoInspector({
               Scale reference:
             </span>
             <span style={{ fontSize: "13px", color: "var(--muted)" }}>
-              {photoUrl ? (gauge.reference_object_detected || "Submerged reference structure") : "Awaiting photo input"}
+              {photoUploading
+                ? "Analyzing image perception..."
+                : photoUrl
+                ? (gauge.reference_object_detected || (isCustomPhoto ? "Operator field photo" : "Submerged reference structure"))
+                : "Awaiting photo input"}
             </span>
           </div>
 
-          {photoUrl && (
+          {photoUrl && !photoUploading && (
             <div style={{ display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
               <span className="status-pill neutral num" style={{ fontSize: "11.5px" }}>
                 Std {(gauge.reference_standard_height_m ?? 1.65).toFixed(2)} m
@@ -669,8 +636,10 @@ export default function PhotoInspector({
         </div>
 
         <p style={{ margin: 0, fontSize: "12.5px", color: "var(--muted)", lineHeight: 1.45 }}>
-          {photoUrl
-            ? (gauge.hydrological_reasoning || "Vision gauge detected reference structure waterline to calculate standing depth.")
+          {photoUploading
+            ? "Segmenting waterline and identifying reference objects via SAM 3.1 & Muse Spark 1.3..."
+            : photoUrl
+            ? (gauge.hydrological_reasoning || (isCustomPhoto ? "Field photo loaded. Click waterline on photo to calibrate ray projection." : "Vision gauge detected reference structure waterline to calculate standing depth."))
             : "SAM 3.1 segmentation and Muse Spark 1.3 visual depth gauge will analyze the street photo once loaded."}
         </p>
 

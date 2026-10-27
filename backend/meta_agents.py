@@ -807,6 +807,9 @@ def call_sam3_segmentation(
         return detected_masks, False
 
     # Fallback only if offline / rate-limited
+    if is_custom_upload:
+        # Never return benchmark scenario masks (e.g. Kasiglahan Village) for custom operator photos!
+        return [], True
     fallback_masks = list(preset.sam_masks)
     return fallback_masks, True
 
@@ -907,6 +910,20 @@ def call_muse_spark_visual_gauge(
     except Exception:
         pass
 
+    if is_custom_upload:
+        generic_gauge = VisualGaugeResult(
+            reference_object_detected="Operator Field Waterline",
+            reference_standard_height_m=1.60,
+            submerged_ratio=0.50,
+            estimated_water_depth_m=0.85,
+            estimated_distance_from_camera_m=20.0,
+            recommended_click_u=0.50,
+            recommended_click_v=0.65,
+            confidence_score=0.80,
+            hydrological_reasoning="Field photo loaded. Click the visible waterline on the photo to calibrate ray casting and depth.",
+        )
+        return generic_gauge, True
+
     return preset.visual_gauge, True
 
 
@@ -930,10 +947,10 @@ def analyze_water_level_with_sam3(
 
     prompts_used = list(PRIMARY_SAM_PROMPTS)
     masks, sam_is_fallback = call_sam3_segmentation(
-        img_path, prompts_used, scenario_id=preset.id, is_custom_upload=is_custom
+        img_path, prompts_used, scenario_id=("live_operator" if is_custom else preset.id), is_custom_upload=is_custom
     )
     gauge, spark_is_fallback = call_muse_spark_visual_gauge(
-        img_path, masks, scenario_id=preset.id, is_custom_upload=is_custom
+        img_path, masks, scenario_id=("live_operator" if is_custom else preset.id), is_custom_upload=is_custom
     )
     is_fallback = bool(sam_is_fallback or spark_is_fallback)
 
@@ -965,7 +982,7 @@ def analyze_water_level_with_sam3(
 
     mode = "calibrated_baseline_fallback" if is_fallback else ("cached" if (sam_is_fallback is False and spark_is_fallback is False) else "live_inference")
     return AnalyzePhotoResponse(
-        scenario_id=preset.id,
+        scenario_id=("live_operator" if is_custom else preset.id),
         photo_url=photo_url,
         masks=masks,
         visual_gauge=gauge,
