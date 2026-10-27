@@ -30,7 +30,7 @@ export default function TriageCopilot({ triageData, floodProjection, projectionL
         >
           <div>
             <h2 style={{ fontSize: "15px", fontWeight: 600, margin: 0, color: "var(--text)" }}>
-              Step 3 · Autonomous triage state machine
+              Autonomous triage state machine
             </h2>
             <p style={{ margin: "2px 0 0 0", fontSize: "12.5px", color: "var(--muted)" }}>
               4-phase vision perception, DEM flood-fill, road graph routing & dispatch handoff
@@ -98,7 +98,7 @@ export default function TriageCopilot({ triageData, floodProjection, projectionL
         >
           <div>
             <h2 style={{ fontSize: "15px", fontWeight: 600, margin: 0, color: "var(--text)" }}>
-              Step 3 · Priority rescue dispatch queue
+              Priority rescue dispatch queue
             </h2>
             <p style={{ margin: "2px 0 0 0", fontSize: "12.5px", color: "var(--muted)" }}>
               {telemetry ? (
@@ -184,9 +184,8 @@ export default function TriageCopilot({ triageData, floodProjection, projectionL
                       </td>
                       <td>
                         <span
-                          className={`status-pill ${
-                            t.priority === "CRITICAL" ? "critical" : "warning"
-                          }`}
+                          className={`status-pill ${t.priority === "CRITICAL" ? "critical" : "warning"
+                            }`}
                           style={{ fontSize: "11px" }}
                         >
                           {t.priority}

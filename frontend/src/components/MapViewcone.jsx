@@ -1226,7 +1226,7 @@ export default function MapViewcone({
             <Navigation size={13} color="#0284c7" />
             <span style={{ color: "var(--text)", fontWeight: 500 }}>Escape corridor:</span>{" "}
             <strong style={{ color: "var(--text)" }}>
-              {triageData?.evacuation_center_name || "Kasiglahan Village Elementary School"}
+              {triageData?.evacuation_center_name || "Designated evacuation centre"}
             </strong>
           </span>
           <span className="num">

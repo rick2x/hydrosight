@@ -1,5 +1,5 @@
-import React, { useState, useRef } from "react";
-import { Upload, Crosshair, AlertTriangle, Copy, Check, RefreshCw, Eye, EyeOff, Trash2 } from "lucide-react";
+import React, { useState, useRef, useEffect } from "react";
+import { Upload, Crosshair, AlertTriangle, Copy, Check, RefreshCw, Eye, EyeOff, Trash2, Waves } from "lucide-react";
 
 const MASK_STROKES = {
   floodwater: { stroke: "#0e7490", fill: "rgba(14, 116, 144, 0.22)" },
@@ -13,7 +13,6 @@ const MASK_STROKES = {
 };
 
 export default function PhotoInspector({
-  scenario,
   analysisResult,
   cameraParams,
   onUpdateCameraParams,
@@ -24,7 +23,6 @@ export default function PhotoInspector({
   customPhotoPreview,
   onResetCustomPhoto,
   onDeleteCustomPhoto,
-  onLoadSampleScenario,
   onSimulateSurge,
   surgeResult,
   surgeLoading,
@@ -37,6 +35,17 @@ export default function PhotoInspector({
   const [dragActive, setDragActive] = useState(false);
   const [imgAspect, setImgAspect] = useState(16 / 9);
   const [showSurgeDrawer, setShowSurgeDrawer] = useState(false);
+
+  const SCAN_STAGES = ["Segmenting floodwater", "Locating scale reference", "Gauging water depth"];
+  const [scanStage, setScanStage] = useState(0);
+  useEffect(() => {
+    if (!photoUploading) {
+      setScanStage(0);
+      return undefined;
+    }
+    const id = setInterval(() => setScanStage((s) => Math.min(SCAN_STAGES.length - 1, s + 1)), 2800);
+    return () => clearInterval(id);
+  }, [photoUploading]);
   const innerStageRef = useRef(null);
   const fileInputRef = useRef(null);
 
@@ -51,17 +60,9 @@ export default function PhotoInspector({
     }
   };
 
-  const masks = photoUploading
-    ? []
-    : (analysisResult?.masks || (isCustomPhoto ? [] : scenario?.sam_masks) || []);
-  const gauge = photoUploading
-    ? {}
-    : (analysisResult?.visual_gauge || (isCustomPhoto ? {} : scenario?.visual_gauge) || {});
-  const photoUrl =
-    customPhotoPreview ||
-    analysisResult?.photo_url ||
-    (isCustomPhoto ? null : scenario?.photo_url) ||
-    null;
+  const masks = photoUploading ? [] : (analysisResult?.masks || []);
+  const gauge = photoUploading ? {} : (analysisResult?.visual_gauge || {});
+  const photoUrl = customPhotoPreview || analysisResult?.photo_url || null;
 
   // The basis is the first non-water reference object named by the gauge
   const basisConcept = (
@@ -134,7 +135,7 @@ export default function PhotoInspector({
               </span>
             ) : photoUrl ? (
               <span className="status-badge status-neutral">
-                Benchmark sample
+                Photo loaded
               </span>
             ) : (
               <span className="status-badge status-neutral">
@@ -146,7 +147,7 @@ export default function PhotoInspector({
             {isCustomPhoto
               ? "Custom photo active · Click waterline to cast 3D ray onto 10 m DEM"
               : photoUrl
-              ? "Benchmark photo loaded · Click waterline to cast 3D ray onto 10 m DEM"
+              ? "Photo loaded · Click waterline to cast 3D ray onto 10 m DEM"
               : "Upload or drop a street flood photo to begin vision perception"}
           </p>
         </div>
@@ -182,19 +183,7 @@ export default function PhotoInspector({
             <span>{photoUploading ? "Analyzing..." : "Upload photo"}</span>
           </button>
 
-          {!photoUrl && onLoadSampleScenario && (
-            <button
-              type="button"
-              className="btn-secondary"
-              disabled={photoUploading}
-              onClick={() => onLoadSampleScenario("kasiglahan_village")}
-              style={{ fontSize: "12px", padding: "0 10px" }}
-              title="Load calibrated benchmark scenario"
-            >
-              <span>Load sample</span>
-            </button>
-          )}
-
+          
           {photoUrl && (
             <button
               type="button"
@@ -293,19 +282,7 @@ export default function PhotoInspector({
               <span>{photoUploading ? "Analyzing photo..." : "Upload flood photo"}</span>
             </button>
 
-            {onLoadSampleScenario && (
-              <button
-                type="button"
-                className="btn-secondary"
-                disabled={photoUploading}
-                onClick={() => onLoadSampleScenario("kasiglahan_village")}
-                style={{ fontSize: "12.5px", padding: "0 14px" }}
-                title="Load calibrated Rodriguez benchmark scenario for demonstration"
-              >
-                <span>Load sample benchmark</span>
-              </button>
-            )}
-          </div>
+                      </div>
         </div>
       ) : (
         <div
@@ -352,7 +329,7 @@ export default function PhotoInspector({
         >
           <img
             src={photoUrl}
-            alt={scenario?.name || "Rodriguez street flood photo"}
+            alt="Rodriguez street flood photo"
             onLoad={(e) => {
               const nw = e.currentTarget.naturalWidth;
               const nh = e.currentTarget.naturalHeight;
@@ -367,31 +344,78 @@ export default function PhotoInspector({
             }}
           />
 
-          {/* Photo perception analyzing indicator */}
+          {/* Photo perception analyzing: hydro scan overlay */}
           {photoUploading && (
-            <div
-              style={{
-                position: "absolute",
-                top: "12px",
-                left: "50%",
-                transform: "translateX(-50%)",
-                backgroundColor: "rgba(15, 23, 42, 0.90)",
-                color: "#38bdf8",
-                padding: "6px 14px",
-                borderRadius: "20px",
-                fontSize: "12px",
-                fontWeight: 600,
-                display: "flex",
-                alignItems: "center",
-                gap: "8px",
-                pointerEvents: "none",
-                zIndex: 7,
-                whiteSpace: "nowrap",
-              }}
-            >
-              <RefreshCw size={13} className="spin" />
-              <span>Analyzing photo perception with SAM 3.1 &amp; Muse Spark...</span>
-            </div>
+            <>
+              <div
+                style={{
+                  position: "absolute",
+                  inset: 0,
+                  background: "linear-gradient(to top, rgba(14, 116, 144, 0.20), rgba(14, 116, 144, 0.02) 55%)",
+                  pointerEvents: "none",
+                  zIndex: 5,
+                }}
+              />
+              <div
+                className="hydro-scanline"
+                style={{
+                  position: "absolute",
+                  left: 0,
+                  right: 0,
+                  height: "2px",
+                  background: "linear-gradient(to right, transparent, #38bdf8 18%, #a5f3fc 50%, #38bdf8 82%, transparent)",
+                  boxShadow: "0 0 14px rgba(56, 189, 248, 0.85)",
+                  pointerEvents: "none",
+                  zIndex: 6,
+                }}
+              />
+              <div
+                role="status"
+                aria-label="Analyzing flood photo with SAM 3.1 and Muse Spark"
+                style={{
+                  position: "absolute",
+                  top: "12px",
+                  left: "50%",
+                  transform: "translateX(-50%)",
+                  width: "min(430px, calc(100% - 24px))",
+                  background: "linear-gradient(135deg, rgba(8, 47, 73, 0.95), rgba(14, 116, 144, 0.93))",
+                  border: "1px solid rgba(125, 211, 252, 0.45)",
+                  borderRadius: "10px",
+                  boxShadow: "0 10px 28px rgba(8, 47, 73, 0.45)",
+                  padding: "10px 12px",
+                  pointerEvents: "none",
+                  zIndex: 7,
+                }}
+              >
+                <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                  <span style={{ position: "relative", width: "32px", height: "32px", flexShrink: 0, display: "inline-flex", alignItems: "center", justifyContent: "center" }}>
+                    <span className="hydro-pulse-ring" style={{ position: "absolute", inset: 0, borderRadius: "50%", border: "1.5px solid rgba(125, 211, 252, 0.8)" }} />
+                    <span style={{ width: "32px", height: "32px", borderRadius: "50%", backgroundColor: "rgba(56, 189, 248, 0.18)", display: "inline-flex", alignItems: "center", justifyContent: "center" }}>
+                      <Waves size={16} color="#7dd3fc" />
+                    </span>
+                  </span>
+                  <span style={{ minWidth: 0 }}>
+                    <span style={{ display: "block", color: "#ffffff", fontSize: "12.5px", fontWeight: 600, lineHeight: 1.25 }}>
+                      Surveying the floodwater
+                    </span>
+                    <span style={{ display: "block", color: "#bae6fd", fontSize: "11px", lineHeight: 1.35 }}>
+                      {SCAN_STAGES[scanStage]} · SAM 3.1 + Muse Spark
+                    </span>
+                  </span>
+                </div>
+                <div style={{ marginTop: "9px", height: "3px", borderRadius: "2px", backgroundColor: "rgba(255, 255, 255, 0.16)", overflow: "hidden" }}>
+                  <div className="hydro-loadbar" style={{ width: "34%", height: "100%", borderRadius: "2px", background: "linear-gradient(to right, #0ea5e9, #a5f3fc)" }} />
+                </div>
+                <div style={{ marginTop: "8px", display: "flex", gap: "12px", flexWrap: "wrap" }}>
+                  {SCAN_STAGES.map((label, i) => (
+                    <span key={label} style={{ display: "inline-flex", alignItems: "center", gap: "5px", fontSize: "10px", color: i <= scanStage ? "#e0f2fe" : "rgba(186, 230, 253, 0.45)", fontWeight: i === scanStage ? 600 : 400 }}>
+                      <span className={i === scanStage ? "hydro-blink" : ""} style={{ width: "6px", height: "6px", borderRadius: "50%", backgroundColor: i <= scanStage ? "#38bdf8" : "rgba(186, 230, 253, 0.35)", display: "inline-block" }} />
+                      {label}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            </>
           )}
 
           {/* Standby prompt banner */}

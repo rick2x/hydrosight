@@ -4,6 +4,7 @@ import HeaderBar from "./components/HeaderBar";
 import PhotoInspector from "./components/PhotoInspector";
 import MapViewcone from "./components/MapViewcone";
 import TriageCopilot from "./components/TriageCopilot";
+import TriageMap from "./components/TriageMap";
 
 export default function App() {
   const [analysisResult, setAnalysisResult] = useState(null);
@@ -20,6 +21,7 @@ export default function App() {
   const [boundaryGeojson, setBoundaryGeojson] = useState(null);
   const [evacCentersGeojson, setEvacCentersGeojson] = useState(null);
   const [triageLoading, setTriageLoading] = useState(false);
+  const [triageReused, setTriageReused] = useState(false);
   const [projectionLoading, setProjectionLoading] = useState(false);
   const [surgeResult, setSurgeResult] = useState(null);
   const [surgeLoading, setSurgeLoading] = useState(false);
@@ -41,6 +43,7 @@ export default function App() {
   const [cameraPinPlaced, setCameraPinPlaced] = useState(false);
 
   const sliderTimerRef = useRef(null);
+  const triageFingerprintRef = useRef(null);
   const projAbortRef = useRef(null);
   const currentConfidence = analysisResult?.visual_gauge?.confidence_score ?? 0.91;
 
@@ -93,7 +96,31 @@ export default function App() {
   );
 
   const runTriageDispatch = useCallback(
-    async (params, currentProj = null) => {
+    async (params, currentProj = null, options = {}) => {
+      const projForFingerprint = currentProj || floodProjection;
+      // Reuse the last triage result when nothing that feeds triage changed
+      // (photo/depth/FOV/camera/target/WSE/flood extent). Re-run Triage passes force.
+      const fingerprint = JSON.stringify({
+        cam_lat: params.cam_lat,
+        cam_lon: params.cam_lon,
+        azimuth_deg: params.azimuth_deg,
+        fov_deg: params.fov_deg,
+        click_u: params.click_u,
+        est_distance_m: params.est_distance_m,
+        water_depth_m: params.water_depth_m,
+        barangay: params.barangay,
+        confidence: currentConfidence,
+        target_lat: projForFingerprint?.target_lat ?? null,
+        target_lon: projForFingerprint?.target_lon ?? null,
+        wse_m: projForFingerprint?.water_surface_elev_m ?? null,
+        flood_area_sqm: projForFingerprint?.flood_area_sqm ?? null,
+        flood_run: projForFingerprint?.run_id ?? null,
+      });
+      if (!options.force && triageData && triageFingerprintRef.current === fingerprint) {
+        setTriageReused(true);
+        return triageData;
+      }
+      setTriageReused(false);
       setTriageLoading(true);
       try {
         const proj = currentProj || floodProjection;
@@ -121,6 +148,7 @@ export default function App() {
         });
         if (triRes.ok) {
           const data = await triRes.json();
+          triageFingerprintRef.current = fingerprint;
           setTriageData(data);
         }
       } catch (err) {
@@ -129,10 +157,15 @@ export default function App() {
         setTriageLoading(false);
       }
     },
-    [floodProjection, currentConfidence]
+    [floodProjection, currentConfidence, triageData]
   );
 
+  const canGoToStep2 = Boolean(analysisResult || customPhotoPreview);
+  const canGoToStep3 = Boolean(floodProjection || cameraPinPlaced);
+
   const handleGoToStep = (step) => {
+    if (step === 2 && !canGoToStep2) return;
+    if (step === 3 && !canGoToStep3) return;
     setActiveStep(step);
     window.scrollTo({ top: 0, behavior: "smooth" });
 
@@ -176,68 +209,8 @@ export default function App() {
     }
   }, []);
 
-  const handleLoadSampleScenario = useCallback(
-    async (scenarioId = "kasiglahan_village") => {
-      setPhotoUploading(true);
-      setPhotoUploadError(null);
-      setSurgeResult(null);
-      setFloodProjection(null);
-      setTriageData(null);
-      setCameraPinPlaced(false);
-      setAnalysisResult(null);
-      if (customPhotoPreview && customPhotoPreview.startsWith("blob:")) {
-        try {
-          URL.revokeObjectURL(customPhotoPreview);
-        } catch {}
-      }
-      setCustomPhotoPreview(null);
-
-      try {
-        const photoRes = await fetch("/api/v1/analyze-photo", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ scenario_id: scenarioId }),
-        });
-        if (photoRes.ok) {
-          const photoData = await photoRes.json();
-          setAnalysisResult(photoData);
-          const resolvedBrgy = photoData.resolved_location?.barangay;
-          const initParams = {
-            ...cameraParams,
-            cam_lat: photoData.resolved_location?.cam_lat ?? cameraParams.cam_lat,
-            cam_lon: photoData.resolved_location?.cam_lon ?? cameraParams.cam_lon,
-            azimuth_deg: photoData.resolved_location?.azimuth_deg ?? cameraParams.azimuth_deg,
-            fov_deg: photoData.resolved_location?.fov_deg ?? cameraParams.fov_deg,
-            barangay: resolvedBrgy || cameraParams.barangay,
-            water_depth_m: photoData.visual_gauge?.estimated_water_depth_m ?? cameraParams.water_depth_m,
-            est_distance_m: photoData.visual_gauge?.estimated_distance_from_camera_m ?? cameraParams.est_distance_m,
-            click_u: photoData.visual_gauge?.recommended_click_u ?? cameraParams.click_u,
-            click_v: photoData.visual_gauge?.recommended_click_v ?? cameraParams.click_v,
-          };
-          setCameraParams(initParams);
-        } else {
-          setPhotoUploadError("Failed to load benchmark scenario.");
-        }
-      } catch {
-        setPhotoUploadError("Could not reach backend photo analyzer.");
-      } finally {
-        setPhotoUploading(false);
-      }
-    },
-    [cameraParams, customPhotoPreview]
-  );
-
   useEffect(() => {
     initApp();
-  }, []);
-
-  // Pre-load the default benchmark scenario so Step 1 opens with the photo,
-  // SAM mask bounding boxes, and visual gauge already analyzed (SPEC Sec.7).
-  const didAutoLoadRef = useRef(false);
-  useEffect(() => {
-    if (didAutoLoadRef.current) return;
-    didAutoLoadRef.current = true;
-    handleLoadSampleScenario("kasiglahan_village");
   }, []);
 
   const handleUpdateCameraParams = (keyOrObj, maybeValue) => {
@@ -300,6 +273,7 @@ export default function App() {
     setAnalysisResult(null);
     setFloodProjection(null);
     setTriageData(null);
+    triageFingerprintRef.current = null;
     setCameraPinPlaced(false);
 
     try {
@@ -367,6 +341,7 @@ export default function App() {
     setAnalysisResult(null);
     setFloodProjection(null);
     setTriageData(null);
+    triageFingerprintRef.current = null;
     setCameraPinPlaced(false);
     setActiveStep(1);
   };
@@ -437,9 +412,6 @@ export default function App() {
           analysisResult={analysisResult}
           floodProjection={floodProjection}
           triageData={triageData}
-          onRunTriage={() => {
-            handleGoToStep(3);
-          }}
           triageLoading={triageLoading}
           projectionLoading={projectionLoading}
           cameraParams={cameraParams}
@@ -560,29 +532,6 @@ export default function App() {
             <span style={{ fontSize: "12px", fontWeight: 600, color: "var(--text)", letterSpacing: "0.01em" }}>
               Operational triage pipeline (Step {activeStep} of 3):
             </span>
-            <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-              {activeStep > 1 && (
-                <button
-                  type="button"
-                  className="btn-secondary"
-                  onClick={() => handleGoToStep(activeStep - 1)}
-                  style={{ height: "26px", fontSize: "11.5px", padding: "0 9px" }}
-                >
-                  ← Back to Step {activeStep - 1}
-                </button>
-              )}
-              {activeStep < 3 && (
-                <button
-                  type="button"
-                  className="btn-primary"
-                  onClick={() => handleGoToStep(activeStep + 1)}
-                  disabled={activeStep === 1 && !analysisResult && !customPhotoPreview}
-                  style={{ height: "26px", fontSize: "11.5px", padding: "0 10px" }}
-                >
-                  Proceed to Step {activeStep + 1} →
-                </button>
-              )}
-            </div>
           </div>
 
           <div className="pipeline-deck">
@@ -605,13 +554,15 @@ export default function App() {
               <span className="pipeline-step-desc">
                 {analysisResult
                   ? `Target u=${cameraParams.click_u.toFixed(2)} · ${cameraParams.water_depth_m.toFixed(2)}m water depth`
-                  : "Upload street flood photo or load benchmark sample"}
+                  : "Upload a street flood photo to begin"}
               </span>
             </div>
 
             {/* Step 2 */}
             <div
               className={`pipeline-step ${activeStep === 2 ? "active" : ""}`}
+              aria-disabled={!canGoToStep2}
+              style={{ opacity: canGoToStep2 || activeStep === 2 ? 1 : 0.55, cursor: canGoToStep2 ? "pointer" : "not-allowed" }}
               onClick={() => handleGoToStep(2)}
               role="button"
               tabIndex={0}
@@ -635,6 +586,8 @@ export default function App() {
             {/* Step 3 */}
             <div
               className={`pipeline-step ${activeStep === 3 ? "active" : ""}`}
+              aria-disabled={!canGoToStep3}
+              style={{ opacity: canGoToStep3 || activeStep === 3 ? 1 : 0.55, cursor: canGoToStep3 ? "pointer" : "not-allowed" }}
               onClick={() => handleGoToStep(3)}
               role="button"
               tabIndex={0}
@@ -670,7 +623,6 @@ export default function App() {
             customPhotoPreview={customPhotoPreview}
             onDeleteCustomPhoto={handleDeleteCustomPhoto}
             onResetCustomPhoto={handleDeleteCustomPhoto}
-            onLoadSampleScenario={handleLoadSampleScenario}
             onSimulateSurge={handleSimulateSurge}
             surgeResult={surgeResult}
             surgeLoading={surgeLoading}
@@ -682,7 +634,7 @@ export default function App() {
             <span style={{ color: "var(--muted)", fontSize: "13px" }}>
               {analysisResult
                 ? `Photo calibrated (u=${cameraParams.click_u.toFixed(2)}, depth=${cameraParams.water_depth_m.toFixed(2)}m). Ready to align viewcone on 3D map.`
-                : "Awaiting photo input. Upload photo or click 'Load sample benchmark' above to begin."}
+                : "Awaiting photo input. Upload a street flood photo above to begin."}
             </span>
             <button
               type="button"
@@ -743,13 +695,13 @@ export default function App() {
         <div style={{ display: activeStep === 3 ? "flex" : "none", flexDirection: "column", gap: "12px" }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "8px", padding: "4px 2px" }}>
             <span style={{ fontSize: "12.5px", color: "var(--muted)", fontWeight: 500 }}>
-              Step 3 of 3 · Autonomous spatial agent reasoning, road severance & rescue dispatch queue
+              Step 3 of 3 · Autonomous spatial agent reasoning, road severance & rescue dispatch queue{triageData && !triageLoading && triageReused ? " · Showing computed result (inputs unchanged)" : ""}
             </span>
             <button
               type="button"
               className="btn-secondary"
               disabled={triageLoading}
-              onClick={() => handleGoToStep(3)}
+              onClick={() => runTriageDispatch(cameraParams, floodProjection, { force: true })}
               style={{ fontSize: "12px", height: "30px", padding: "0 12px" }}
             >
               <RefreshCw size={12} className={triageLoading ? "spin" : ""} />
@@ -796,6 +748,16 @@ export default function App() {
               </div>
             </div>
           )}
+
+          <TriageMap
+            triageData={triageData}
+            floodProjection={floodProjection}
+            boundaryGeojson={boundaryGeojson}
+            evacCentersGeojson={evacCentersGeojson}
+            cameraParams={cameraParams}
+            triageLoading={triageLoading}
+            active={activeStep === 3}
+          />
 
           <TriageCopilot
             triageData={triageData}

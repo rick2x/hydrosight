@@ -26,6 +26,8 @@ from PIL import Image, ImageDraw
 from backend.geo_engine import (
     DEFAULT_DEM_PATH,
     OUTPUTS_DIR,
+    assess_evacuation_centers,
+    find_nearest_safe_evacuation_center,
     compute_safe_rescue_route,
     get_inundated_structures,
     load_evacuation_centers,
@@ -1599,19 +1601,33 @@ def _run_spark_commander(
     state: Dict[str, Any] = {"routes": [], "trace": [], "tickets": None, "inundation": None,
                              "evac_name": fallback_evac_name, "evac_lat": fallback_evac_lat, "evac_lon": fallback_evac_lon}
 
+    # Flood status of every centre at this WSE/extent, computed once.
+    _safety_ranked = assess_evacuation_centers(req.target_lat, req.target_lon, wse_m=effective_wse_m, flood_gdf_utm=flood_gdf_utm)
+    _safety_by_coord = {(round(c["lat"], 6), round(c["lon"], 6)): c for c in _safety_ranked}
+
+    def _centre_safety(lat_v: float, lon_v: float, tol_m: float = 90.0):
+        best = None
+        for c in _safety_ranked:
+            d = math.hypot((c["lon"] - lon_v) * 103000, (c["lat"] - lat_v) * 111000)
+            if best is None or d < best[0]:
+                best = (d, c)
+        return best[1] if best and best[0] <= tol_m else None
+
+    def _dry_suggestions(limit: int = 3):
+        return [
+            {"name": c["name"], "lat": c["lat"], "lon": c["lon"], "straight_line_distance_m": c["straight_dist_m"]}
+            for c in _safety_ranked if not c["flooded"]
+        ][:limit]
+
     def _evac_candidates(t_lat: float, t_lon: float, limit: int = 5):
-        data = load_evacuation_centers()
-        tx, ty = to_utm.transform(t_lon, t_lat)
-        out = []
-        _items = data if isinstance(data, list) else data.get("features", [])
-        for f in _items:
-            props = f if isinstance(f, dict) and "lat" in f else (f.get("properties", {}) if isinstance(f, dict) else {})
-            if props.get("lat") is None or props.get("lon") is None:
-                continue
-            cx, cy = to_utm.transform(float(props["lon"]), float(props["lat"]))
-            out.append({"name": props.get("name"), "lat": round(float(props["lat"]), 6), "lon": round(float(props["lon"]), 6),
-                        "straight_line_distance_m": round(math.hypot(cx - tx, cy - ty))})
-        out.sort(key=lambda c: c["straight_line_distance_m"])
+        ranked = assess_evacuation_centers(t_lat, t_lon, wse_m=effective_wse_m, flood_gdf_utm=flood_gdf_utm)
+        out = [{"name": c["name"], "lat": c["lat"], "lon": c["lon"],
+                "straight_line_distance_m": c["straight_dist_m"],
+                "flooded": c["flooded"], "flood_depth_m": c["flood_depth_m"],
+                "ground_elev_m": c["ground_elev_m"]}
+               for c in ranked]
+        # Dry centres first (nearest dry first), flooded last so the model picks dry.
+        out.sort(key=lambda c: (c["flooded"], c["straight_line_distance_m"]))
         return out[:limit]
 
     def _nearest_centre_name(lat_v: float, lon_v: float):
@@ -1649,7 +1665,7 @@ def _run_spark_commander(
                                [f"Incident target is {req.target_lat}, {req.target_lon}"])
         limit = int(args.get("limit") or 5)
         return {"evacuation_centers": _evac_candidates(float(la), float(lo), limit),
-                "instruction": "Choose one centre and pass its exact lat/lon as the route origin."}
+                "instruction": "Choose the nearest centre with flooded=false and pass its exact lat/lon as the route origin. Flooded centres are listed last and must never be used."}
 
     def tool_route(args):
         for k in ("origin_lat", "origin_lon", "dest_lat", "dest_lon", "max_passable_depth_m", "wse_m"):
@@ -1661,6 +1677,11 @@ def _run_spark_commander(
             return _tool_error("validation_error", "Coordinates out of WGS84 range.", [f"Incident target is {req.target_lat}, {req.target_lon}"])
         if not (0 <= float(args["max_passable_depth_m"]) <= 10):
             return _tool_error("validation_error", "max_passable_depth_m must be between 0 and 10.", ["0.5 = wheeled truck, 10.0 = amphibious boat"])
+        _origin_safety = _centre_safety(float(args["origin_lat"]), float(args["origin_lon"]))
+        if _origin_safety is not None and _origin_safety["flooded"]:
+            return _tool_error("flooded_evacuation_center",
+                               f"Staging centre '{_origin_safety['name']}' is flooded at WSE {effective_wse_m:.2f} m (depth {_origin_safety['flood_depth_m']:.2f} m at its ground). Never stage from or evacuate to a flooded centre.",
+                               [f"{c['name']} ({c['lat']}, {c['lon']})" for c in _dry_suggestions()])
         vehicle = str(args.get("vehicle_type") or ("amphibious_rubber_boat" if float(args["max_passable_depth_m"]) > 0.6 else "6x6 High-Water Rescue Truck"))
         route = compute_safe_rescue_route(origin_lat=float(args["origin_lat"]), origin_lon=float(args["origin_lon"]),
                                           dest_lat=float(args["dest_lat"]), dest_lon=float(args["dest_lon"]),
@@ -1691,6 +1712,11 @@ def _run_spark_commander(
         selected = [by_id[str(i)] for i in ids][:3]
         vehicle = str(args.get("vehicle_type") or (state["routes"][-1]["vehicle_type"] if state["routes"] else "amphibious_rubber_boat"))
         evac_center = str(args.get("evacuation_center") or state["evac_name"])
+        _flooded_names = {c["name"].strip().lower() for c in _safety_ranked if c["flooded"]}
+        if evac_center.strip().lower() in _flooded_names:
+            return _tool_error("flooded_evacuation_center",
+                               f"Evacuation destination '{evac_center}' is itself flooded at WSE {effective_wse_m:.2f} m. Evacuate to a dry centre instead.",
+                               [c["name"] for c in _dry_suggestions()])
         eta = float(state["routes"][-1]["route"]["eta_minutes"]) if state["routes"] and state["routes"][-1]["route"]["route_found"] else 5.0
         tickets, telemetry = generate_dispatch_tickets(
             barangay=resolved_barangay, wse_m=effective_wse_m, water_depth_m=effective_depth_m,
@@ -1707,7 +1733,7 @@ def _run_spark_commander(
         "You are the HydroSight Spatial Commander for Rodriguez (Montalban), Rizal flood rescue. You command deterministic "
         "geospatial tools; you never invent numbers - every figure must come from a tool result. Mission protocol: "
         "1) call get_inundated_structures with the effective WSE and barangay from the incident context; "
-        "2) call list_evacuation_centers and CHOOSE the evacuation centre to stage from (prefer the nearest that is not itself compromised); "
+        "2) call list_evacuation_centers and CHOOSE a centre with flooded=false to stage from and evacuate to (nearest dry centre first; a flooded centre must never be used - the tools reject it); "
         "3) call compute_safe_rescue_route from that centre's exact coordinates with vehicle 6x6 High-Water Rescue Truck and "
         "max_passable_depth_m 0.5; if route_found is false, retry ONCE with amphibious_rubber_boat and max_passable_depth_m 10.0 "
         "(deep water over roads does not block a boat); "
@@ -1931,6 +1957,18 @@ def run_autonomous_triage_agent(req: TriageRouteRequest) -> TriageRouteResponse:
                     ).to_crs("EPSG:32651")
         except Exception:
             flood_gdf_utm = None
+
+    # Destination/staging centre must be dry at this WSE: replace the purely
+    # distance-nearest centre (which may itself be flooded, e.g. a school inside
+    # the extent) with the nearest non-flooded centre before any routing.
+    try:
+        _safe_ec = find_nearest_safe_evacuation_center(
+            req.target_lat, req.target_lon, wse_m=effective_wse_m, flood_gdf_utm=flood_gdf_utm
+        )
+        if _safe_ec and not _safe_ec.get("flooded", False):
+            evac_name, evac_lat, evac_lon = _safe_ec["name"], float(_safe_ec["lat"]), float(_safe_ec["lon"])
+    except Exception:
+        pass
 
     # --- Muse Spark Spatial Commander (live function-calling) ---
     # When the Meta API is available, Spark drives steps 2-4 itself: it calls

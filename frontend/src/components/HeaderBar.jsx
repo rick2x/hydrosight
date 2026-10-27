@@ -1,10 +1,9 @@
 import React from "react";
-import { Download, RefreshCw, Layers, ShieldAlert, CheckCircle2 } from "lucide-react";
+import { Layers, ShieldAlert, CheckCircle2 } from "lucide-react";
 
 export default function HeaderBar({
   floodProjection,
   triageData,
-  onRunTriage,
   triageLoading,
   projectionLoading,
   cameraParams,
@@ -23,7 +22,6 @@ export default function HeaderBar({
   };
   const currentBrgy = summary.barangay || cameraParams?.barangay || "SAN JOSE";
   const wse = floodProjection?.water_surface_elev_m;
-  const depth = floodProjection?.measured_depth_m ?? cameraParams?.water_depth_m ?? 1.35;
   const runId = floodProjection?.run_id || "live_incident";
 
   const isCritical = summary.critical_depth_count > 0 || summary.affected_evac_centers_count > 0;
@@ -31,11 +29,11 @@ export default function HeaderBar({
   const primaryFinding = projectionLoading
     ? "Sampling 10 m bare-earth DEM, calculating Water Surface Elevation, and flood-filling connected lowland basin..."
     : !floodProjection
-    ? "Standby · Upload a street flood photo or load benchmark sample to project 3D flood depth and calculate evacuation routes."
+    ? "Standby · Upload a street flood photo to project 3D flood depth and calculate evacuation routes."
     : `Water surface at ${wse?.toFixed(2)} m MSL submerges ${summary.critical_depth_count} structures above 1.5 m in Brgy. ${currentBrgy}${summary.affected_evac_centers_count > 0 ? ` (${summary.affected_evac_centers_count} evacuation center${summary.affected_evac_centers_count > 1 ? "s" : ""} compromised)` : ""}.`;
 
   const corridorFinding = triageData
-    ? `Active corridor: ${(triageData.vehicle_selected || "6x6 Rescue Truck").replace(/_/g, " ")} to ${triageData.evacuation_center_name || "Kasiglahan Village Elementary School"} (${Math.round(triageData.route_distance_m)} m · ${triageData.eta_minutes.toFixed(1)} min ETA).`
+    ? `Active corridor: ${(triageData.vehicle_selected || "6x6 Rescue Truck").replace(/_/g, " ")} to ${triageData.evacuation_center_name || "the designated evacuation centre"} (${Math.round(triageData.route_distance_m)} m · ${triageData.eta_minutes.toFixed(1)} min ETA).`
     : floodProjection
     ? `${(summary.affected_structures ?? 0).toLocaleString()} total OSM building footprints identified in flooded zone.`
     : null;
@@ -76,47 +74,6 @@ export default function HeaderBar({
           </span>
         </div>
 
-        {/* Actions */}
-        <div className="header-actions">
-          <button
-            type="button"
-            className="btn-secondary"
-            onClick={onRunTriage}
-            disabled={triageLoading || projectionLoading}
-            style={{ height: "28px", fontSize: "12px", padding: "0 9px" }}
-          >
-            <RefreshCw size={12} className={triageLoading || projectionLoading ? "spin" : ""} />
-            <span>
-              {projectionLoading
-                ? "Projecting DEM..."
-                : triageLoading
-                ? "Running triage..."
-                : (!floodProjection ? "Project flood extent" : "Re-run triage")}
-            </span>
-          </button>
-
-          <a
-            href={floodProjection ? `/api/v1/download-shp/${runId}` : "#"}
-            download={floodProjection ? `rodriguez_flood_extent_${runId}.zip` : undefined}
-            onClick={(e) => {
-              if (!floodProjection) {
-                e.preventDefault();
-                alert("Flood projection is computing or awaiting waterline selection.");
-              }
-            }}
-            className="btn-primary"
-            style={{
-              height: "28px",
-              fontSize: "12px",
-              padding: "0 10px",
-              textDecoration: "none",
-              opacity: floodProjection ? 1 : 0.6,
-            }}
-          >
-            <Download size={12} />
-            <span>Export .SHP ({depth.toFixed(2)} m)</span>
-          </a>
-        </div>
       </div>
 
       {/* Subtle Divider */}

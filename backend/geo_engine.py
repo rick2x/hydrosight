@@ -358,7 +358,78 @@ def load_evacuation_centers() -> List[Dict[str, Any]]:
     return centers
 
 
-def find_nearest_evacuation_center(lat: float, lon: float, min_safe_dist_m: float = 55.0) -> Dict[str, Any]:
+def assess_evacuation_centers(
+    lat: float,
+    lon: float,
+    wse_m: Optional[float] = None,
+    flood_gdf_utm=None,
+) -> List[Dict[str, Any]]:
+    """
+    Rank all evacuation centers by straight-line distance from (lat, lon) and,
+    when a WSE is supplied, annotate each with its flood status. A center is
+    flooded when its point falls inside the flood extent or its DEM ground
+    elevation is >= 0.05 m below the WSE. Flooded centers must never be used
+    as a rescue staging origin or an evacuation destination.
+    """
+    centers = load_evacuation_centers()
+    tx, ty = to_utm.transform(lon, lat)
+
+    flood_union = None
+    if flood_gdf_utm is not None and not flood_gdf_utm.empty:
+        try:
+            flood_union = unary_union(flood_gdf_utm.geometry)
+        except Exception:
+            flood_union = None
+
+    grounds: Dict[str, float] = {}
+    if wse_m is not None:
+        try:
+            with rasterio.open(ensure_dem_exists()) as src:
+                for ec in centers:
+                    grounds[ec["id"]] = float(_sample_dem_elevation(src, ec["utm_x"], ec["utm_y"]))
+        except Exception:
+            grounds = {}
+
+    ranked: List[Dict[str, Any]] = []
+    for ec in centers:
+        dist_m = math.hypot(ec["utm_x"] - tx, ec["utm_y"] - ty)
+        ground = grounds.get(ec["id"])
+        depth = round(max(0.0, float(wse_m) - ground), 2) if (wse_m is not None and ground is not None) else 0.0
+        inside = False
+        if flood_union is not None:
+            try:
+                inside = bool(flood_union.intersects(Point(ec["utm_x"], ec["utm_y"])))
+            except Exception:
+                inside = False
+        flooded = bool(inside or depth >= 0.05) if wse_m is not None else False
+        ranked.append({
+            **ec,
+            "straight_dist_m": round(dist_m, 1),
+            "ground_elev_m": (round(ground, 2) if ground is not None else None),
+            "flood_depth_m": depth,
+            "inside_flood_extent": inside,
+            "flooded": flooded,
+        })
+    ranked.sort(key=lambda c: c["straight_dist_m"])
+    return ranked
+
+
+def find_nearest_safe_evacuation_center(
+    lat: float,
+    lon: float,
+    wse_m: Optional[float] = None,
+    flood_gdf_utm=None,
+) -> Dict[str, Any]:
+    """Nearest evacuation center that is NOT flooded at the given WSE.
+    Falls back to the nearest center (flagged flooded) only if every center is flooded."""
+    ranked = assess_evacuation_centers(lat, lon, wse_m=wse_m, flood_gdf_utm=flood_gdf_utm)
+    for ec in ranked:
+        if not ec["flooded"]:
+            return ec
+    return ranked[0] if ranked else find_nearest_evacuation_center(lat, lon)
+
+
+def find_nearest_evacuation_center(lat: float, lon: float, min_safe_dist_m: float = 55.0, wse_m: Optional[float] = None, flood_gdf_utm=None) -> Dict[str, Any]:
     """
     Finds the evacuation center from backend/data/evacuationcenters.csv with the
     shortest actual road network distance along backend/data/rodriguez_roads.shp.
@@ -372,6 +443,11 @@ def find_nearest_evacuation_center(lat: float, lon: float, min_safe_dist_m: floa
         euclid_ranked.append((dist_m, ec))
 
     euclid_ranked.sort(key=lambda item: item[0])
+    if wse_m is not None:
+        safety = {ec["id"]: ec for ec in assess_evacuation_centers(lat, lon, wse_m=wse_m, flood_gdf_utm=flood_gdf_utm)}
+        dry = [item for item in euclid_ranked if not safety.get(item[1]["id"], {}).get("flooded", False)]
+        if dry:
+            euclid_ranked = dry
     candidates = [item for item in euclid_ranked if item[0] >= min_safe_dist_m][:6] or euclid_ranked[:3]
 
     G_shp, node_list, node_arr = _get_road_shapefile_graph()
@@ -391,7 +467,7 @@ def find_nearest_evacuation_center(lat: float, lon: float, min_safe_dist_m: floa
                 best_road_dist = road_d
                 best_ec = ec
                 best_euclid = euclid_d
-        return {**best_ec, "straight_dist_m": round(best_euclid, 1), "road_dist_m": round(best_road_dist, 1)}
+        return {**best_ec, "straight_dist_m": round(best_euclid, 1), "road_dist_m": round(best_road_dist, 1), "flooded": bool((safety.get(best_ec["id"], {}) if wse_m is not None else {}).get("flooded", False))}
 
     best_dist, best_ec = candidates[0]
     return {**best_ec, "straight_dist_m": round(best_dist, 1), "road_dist_m": round(best_dist * 1.2, 1)}
@@ -421,7 +497,7 @@ def get_evacuation_centers_geojson() -> Dict[str, Any]:
     }
 
 
-def resolve_location_metadata(lat: float, lon: float, fallback_barangay: str = "SAN JOSE") -> Dict[str, Any]:
+def resolve_location_metadata(lat: float, lon: float, fallback_barangay: str = "SAN JOSE", wse_m: Optional[float] = None, flood_gdf_utm=None) -> Dict[str, Any]:
     """
     Given any (lat, lon) in Rodriguez (Montalban), resolves the containing or nearest
     Barangay from political_boundary_rodriguez.shp and the nearest real evacuation center
@@ -458,7 +534,7 @@ def resolve_location_metadata(lat: float, lon: float, fallback_barangay: str = "
                 best_dist = d
                 best_zone = z
 
-    nearest_ec = find_nearest_evacuation_center(lat, lon)
+    nearest_ec = find_nearest_evacuation_center(lat, lon, wse_m=wse_m, flood_gdf_utm=flood_gdf_utm)
 
     return {
         "barangay": barangay_name,
@@ -467,6 +543,7 @@ def resolve_location_metadata(lat: float, lon: float, fallback_barangay: str = "
         "evac_lat": nearest_ec["lat"],
         "evac_lon": nearest_ec["lon"],
         "evac_straight_dist_m": nearest_ec["straight_dist_m"],
+        "evac_flooded": bool(nearest_ec.get("flooded", False)),
     }
 
 
@@ -1265,7 +1342,9 @@ def get_inundated_structures(
         residential_count = int((affected_bldgs["infra_category"] == "residential").sum())
 
         evac_sub = affected_bldgs[affected_bldgs["is_evac_center"] == True]
-        evac_count = int(len(evac_sub))
+        # Count distinct evacuation centers, not footprints: one center
+        # (school/court campus) maps to many OSM footprints within 35 m.
+        evac_count = int(evac_sub["evac_center_name"].nunique())
         compromised_evac_centers = [name for name in evac_sub["evac_center_name"].unique() if name]
     else:
         schools_count = healthcare_count = civic_count = commercial_count = religious_count = residential_count = evac_count = 0
