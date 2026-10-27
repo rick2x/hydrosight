@@ -515,8 +515,8 @@ export default function PhotoInspector({
           >
             <AlertTriangle size={14} />
             {surgeLoading
-              ? "Generating +1.5m surge (Muse Image)..."
-              : "Simulate +1.5m Typhoon Surge (Muse Image)"}
+              ? "Computing +1.5m flood surge..."
+              : "Simulate +1.5m Flood Surge"}
           </button>
 
           {surgeResult && (
@@ -557,6 +557,10 @@ export default function PhotoInspector({
                 {copiedSms ? <Check size={13} /> : <Copy size={13} />}
                 {copiedSms ? "Copied SMS alert" : "Copy SMS evacuation card"}
               </button>
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "12px", color: "var(--pill-warning-ink)", opacity: 0.9 }}>
+              <span>Forecast method:</span>
+              <span className="mono-id" style={{ fontWeight: 600 }}>{surgeResult.model_used}</span>
             </div>
             <p style={{ margin: 0, fontSize: "13px", color: "var(--pill-warning-ink)" }}>
               {surgeResult.sms_broadcast_text}

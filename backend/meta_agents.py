@@ -806,9 +806,9 @@ def call_sam3_segmentation(
         )
         return detected_masks, False
 
-    # Fallback only if offline
+    # Fallback only if offline / rate-limited
     fallback_masks = list(preset.sam_masks)
-    return fallback_masks, False
+    return fallback_masks, True
 
 
 def call_muse_spark_visual_gauge(
@@ -907,7 +907,7 @@ def call_muse_spark_visual_gauge(
     except Exception:
         pass
 
-    return preset.visual_gauge, False
+    return preset.visual_gauge, True
 
 
 def analyze_water_level_with_sam3(
@@ -929,12 +929,13 @@ def analyze_water_level_with_sam3(
     photo_url = f"/static/photos/{img_path.name}" if is_custom else preset.photo_url
 
     prompts_used = list(PRIMARY_SAM_PROMPTS)
-    masks, sam_cached = call_sam3_segmentation(
+    masks, sam_is_fallback = call_sam3_segmentation(
         img_path, prompts_used, scenario_id=preset.id, is_custom_upload=is_custom
     )
-    gauge, spark_cached = call_muse_spark_visual_gauge(
+    gauge, spark_is_fallback = call_muse_spark_visual_gauge(
         img_path, masks, scenario_id=preset.id, is_custom_upload=is_custom
     )
+    is_fallback = bool(sam_is_fallback or spark_is_fallback)
 
     # Sync submerged_ratio onto non-water SAM 3.1 masks from Muse Spark 1.3 gauge
     for m in masks:
@@ -962,6 +963,7 @@ def analyze_water_level_with_sam3(
                 if m.concept != "floodwater":
                     m.submerged_ratio = gauge.submerged_ratio
 
+    mode = "calibrated_baseline_fallback" if is_fallback else ("cached" if (sam_is_fallback is False and spark_is_fallback is False) else "live_inference")
     return AnalyzePhotoResponse(
         scenario_id=preset.id,
         photo_url=photo_url,
@@ -971,7 +973,9 @@ def analyze_water_level_with_sam3(
         initial_confidence_score=initial_conf if self_check_triggered else None,
         prompts_used=prompts_used,
         model_chain=["sam-3.1", "muse-spark-1.3"],
-        cached=bool(sam_cached and spark_cached),
+        cached=bool(not is_fallback and not is_custom),
+        fallback_used=is_fallback,
+        execution_mode=mode,
     )
 
 
@@ -1191,12 +1195,19 @@ def run_autonomous_triage_agent(req: TriageRouteRequest) -> TriageRouteResponse:
             f"-> depth {analysis_res.visual_gauge.estimated_water_depth_m:.2f}m (confidence {analysis_res.visual_gauge.confidence_score:.2f})."
         )
     else:
-        step1_out = (
-            f"Live Perception Verified: sam-3.1 + muse-spark-1.3 segmented {len(analysis_res.masks)} visual masks "
-            f"in real photo ({preset.id}.jpg), grounding '{analysis_res.visual_gauge.reference_object_detected}' "
-            f"at {analysis_res.visual_gauge.submerged_ratio * 100:.0f}% submergence -> depth {req.water_depth_m:.2f}m "
-            f"(confidence {analysis_res.visual_gauge.confidence_score:.2f})."
-        )
+        if analysis_res.fallback_used:
+            step1_out = (
+                f"Calibrated Baseline Active (Demo Resilience Mode): Reference masks grounded "
+                f"'{analysis_res.visual_gauge.reference_object_detected}' at {analysis_res.visual_gauge.submerged_ratio * 100:.0f}% submergence "
+                f"-> depth {req.water_depth_m:.2f}m (confidence {analysis_res.visual_gauge.confidence_score:.2f})."
+            )
+        else:
+            step1_out = (
+                f"Live Perception Verified: sam-3.1 + muse-spark-1.3 segmented {len(analysis_res.masks)} visual masks "
+                f"in real photo ({preset.id}.jpg), grounding '{analysis_res.visual_gauge.reference_object_detected}' "
+                f"at {analysis_res.visual_gauge.submerged_ratio * 100:.0f}% submergence -> depth {req.water_depth_m:.2f}m "
+                f"(confidence {analysis_res.visual_gauge.confidence_score:.2f})."
+            )
 
     agent_steps.append(
         AgentStepLog(

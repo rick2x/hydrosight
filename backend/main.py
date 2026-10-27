@@ -143,23 +143,26 @@ async def analyze_photo(
 
 @app.post("/api/v1/project-flood", response_model=ProjectFloodResponse)
 def project_flood(req: ProjectFloodRequest) -> ProjectFloodResponse:
-    run_id = req.scenario_id or "latest"
-    loc_meta = resolve_location_metadata(req.cam_lat, req.cam_lon, fallback_barangay=req.barangay or "SAN JOSE")
-    result = project_photo_to_flood_shapefile(
-        dem_path=str(DEFAULT_DEM_PATH),
-        cam_lon=req.cam_lon,
-        cam_lat=req.cam_lat,
-        azimuth_deg=req.azimuth_deg,
-        fov_deg=req.fov_deg,
-        click_u=req.click_u,
-        est_distance_m=req.est_distance_m,
-        water_depth_m=req.water_depth_m,
-        search_radius_m=req.search_radius_m,
-        output_dir=str(OUTPUTS_DIR),
-        run_id=run_id,
-        barangay=loc_meta["barangay"],
-    )
-    return ProjectFloodResponse(**result)
+    try:
+        run_id = req.scenario_id or "latest"
+        loc_meta = resolve_location_metadata(req.cam_lat, req.cam_lon, fallback_barangay=req.barangay or "SAN JOSE")
+        result = project_photo_to_flood_shapefile(
+            dem_path=str(DEFAULT_DEM_PATH),
+            cam_lon=req.cam_lon,
+            cam_lat=req.cam_lat,
+            azimuth_deg=req.azimuth_deg,
+            fov_deg=req.fov_deg,
+            click_u=req.click_u,
+            est_distance_m=req.est_distance_m,
+            water_depth_m=req.water_depth_m,
+            search_radius_m=req.search_radius_m,
+            output_dir=str(OUTPUTS_DIR),
+            run_id=run_id,
+            barangay=loc_meta["barangay"],
+        )
+        return ProjectFloodResponse(**result)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
 
 @app.post("/api/v1/triage-route", response_model=TriageRouteResponse)

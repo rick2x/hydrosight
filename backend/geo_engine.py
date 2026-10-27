@@ -698,6 +698,14 @@ def project_photo_to_flood_shapefile(
     polys = []
     profile_points: List[Dict[str, float]] = []
     with rasterio.open(resolved_dem) as src:
+        b_left, b_bottom, b_right, b_top = src.bounds
+        # Explicit validation: Reject coordinates far outside the Rodriguez pilot DEM (e.g. lat/lon 0, 0)
+        if not (b_left - 5000.0 <= cam_x <= b_right + 5000.0 and b_bottom - 5000.0 <= cam_y <= b_top + 5000.0):
+            raise ValueError(
+                f"Camera coordinate ({cam_lat:.4f}, {cam_lon:.4f}) is outside the Rodriguez, Rizal pilot DEM extent "
+                f"(WGS84 coverage: 14.69°N–14.89°N, 121.10°E–121.35°E). "
+                "Please place the camera pin within the Rodriguez municipality boundary."
+            )
         cam_x, cam_y = _clamp_utm_to_dem(src, cam_x, cam_y, margin=search_radius_m + 20.0)
         target_x, target_y = _clamp_utm_to_dem(src, target_x, target_y, margin=search_radius_m + 20.0)
         ground_elev = _sample_dem_elevation(src, target_x, target_y)

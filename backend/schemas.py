@@ -39,6 +39,8 @@ class AnalyzePhotoResponse(BaseModel):
     prompts_used: List[str]
     model_chain: List[str]
     cached: bool = False
+    fallback_used: bool = False
+    execution_mode: str = 'live_inference'
 
 
 class ProjectFloodRequest(BaseModel):
@@ -205,6 +207,8 @@ class SurgeSimulationResponse(BaseModel):
     model_used: str
     surge_flood_geojson: Dict[str, Any]
     cached: bool = False
+    fallback_used: bool = False
+    execution_mode: str = 'live_inference'
 
 
 class ScenarioPreset(BaseModel):
