@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import maplibregl from "maplibre-gl";
 import { sector, point, lineString } from "@turf/turf";
-import { Compass, Navigation, Globe } from "lucide-react";
+import { Compass, Navigation, Globe, Lock, MapPin, AlertTriangle, School, HeartPulse, Landmark, Building2, Home, Info } from "lucide-react";
 
 const LIGHT_MAP_STYLE = {
   version: 8,
@@ -30,7 +30,6 @@ const LIGHT_MAP_STYLE = {
 };
 
 export default function MapViewcone({
-  activeScenarioId,
   cameraParams,
   floodProjection,
   triageData,
@@ -43,6 +42,17 @@ export default function MapViewcone({
   const cameraMarkerRef = useRef(null);
   const onUpdateCoordsRef = useRef(onUpdateCameraCoords);
   const [mapReady, setMapReady] = useState(false);
+  const [isCameraLocked, setIsCameraLocked] = useState(true);
+  const isCameraLockedRef = useRef(true);
+  const buildingClickHandledRef = useRef(false);
+  const hasInitialFlownRef = useRef(false);
+
+  useEffect(() => {
+    isCameraLockedRef.current = isCameraLocked;
+    if (cameraMarkerRef.current) {
+      cameraMarkerRef.current.setDraggable(!isCameraLocked);
+    }
+  }, [isCameraLocked]);
 
   useEffect(() => {
     onUpdateCoordsRef.current = onUpdateCameraCoords;
@@ -114,18 +124,27 @@ export default function MapViewcone({
       markerEl.style.cursor = "grab";
       markerEl.title = "Draggable Camera Pin — Drag or click anywhere in Montalban";
 
-      const marker = new maplibregl.Marker({ element: markerEl, draggable: true })
+      const isLocked = isCameraLockedRef.current;
+      const marker = new maplibregl.Marker({ element: markerEl, draggable: !isLocked })
         .setLngLat([cameraParams.cam_lon, cameraParams.cam_lat])
         .addTo(map);
 
       marker.on("dragend", () => {
+        if (isCameraLockedRef.current) return;
         const lngLat = marker.getLngLat();
         onUpdateCoordsRef.current(Number(lngLat.lat.toFixed(6)), Number(lngLat.lng.toFixed(6)));
       });
 
-      // Allow clicking ANYWHERE on the map across Rodriguez (Montalban) to relocate camera & project flood
+      // Clicking anywhere on map relocates camera ONLY if camera is unlocked AND no building was clicked
       map.on("click", (e) => {
         if (!e.lngLat) return;
+        if (buildingClickHandledRef.current) {
+          buildingClickHandledRef.current = false;
+          return;
+        }
+        if (isCameraLockedRef.current) {
+          return; // Camera pin is locked; do not relocate
+        }
         const clickedLat = Number(e.lngLat.lat.toFixed(6));
         const clickedLon = Number(e.lngLat.lng.toFixed(6));
         marker.setLngLat([clickedLon, clickedLat]);
@@ -196,6 +215,80 @@ export default function MapViewcone({
             "fill-extrusion-base": 0,
             "fill-extrusion-opacity": 0.86,
           },
+        });
+
+        const bldgPopup = new maplibregl.Popup({
+          closeButton: true,
+          closeOnClick: false,
+          maxWidth: "340px",
+        });
+
+        map.on("mouseenter", "buildings-3d", () => {
+          map.getCanvas().style.cursor = "pointer";
+        });
+        map.on("mouseleave", "buildings-3d", () => {
+          map.getCanvas().style.cursor = "";
+        });
+
+        map.on("click", "buildings-3d", (e) => {
+          buildingClickHandledRef.current = true;
+          if (!e.features || e.features.length === 0) return;
+          const props = e.features[0].properties;
+          const isEvac = props.is_evac_center === true || props.is_evac_center === "true";
+          const bName =
+            props.building_name ||
+            (isEvac ? props.evac_center_name : "") ||
+            `${props.building_type || "Building"} (${props.building_id})`;
+          const depth = Number(props.flood_depth_m || 0);
+          const tier = props.risk_tier || "safe";
+          const cat = props.infra_category || "residential";
+
+          const iconMap = {
+            education: "School / Educational",
+            healthcare: "Hospital / Clinic",
+            emergency_civic: "Civic / Emergency",
+            religious: "Place of Worship",
+            commercial_logistics: "Commercial / Logistics",
+            residential: "Residential",
+          };
+          const catLabel = isEvac
+            ? "Designated Evac Center"
+            : iconMap[cat] || "Building";
+          const tierColor =
+            tier === "critical"
+              ? "#c4242a"
+              : tier === "medium"
+                ? "#d97706"
+                : tier === "low"
+                  ? "#1e7b4f"
+                  : "#64748b";
+          const tierLabel =
+            tier === "safe"
+              ? "Dry / Safe"
+              : `${tier.toUpperCase()} (${depth.toFixed(2)}m)`;
+
+          const html = `
+            <div style="font-family: inherit; font-size: 13px; color: #1e293b; padding: 4px;">
+              <div style="font-weight: 700; font-size: 14px; margin-bottom: 4px; color: #0f172a;">${bName}</div>
+              <div style="display: flex; gap: 6px; align-items: center; margin-bottom: 8px; flex-wrap: wrap;">
+                <span style="display: inline-block; padding: 2px 7px; border-radius: 4px; font-size: 11px; font-weight: 600; background: ${isEvac ? "#fee2e2" : "#f1f5f9"}; color: ${isEvac ? "#991b1b" : "#334155"};">
+                  ${catLabel}
+                </span>
+                <span style="display: inline-block; padding: 2px 7px; border-radius: 4px; font-size: 11px; font-weight: 600; background: ${tierColor}20; color: ${tierColor};">
+                  ${tierLabel}
+                </span>
+                <span style="font-size: 11px; color: #64748b;">Brgy. ${props.barangay || "SAN JOSE"}</span>
+              </div>
+              <div style="border-top: 1px solid #e2e8f0; /* taste-skill-ignore */ padding-top: 6px; display: grid; grid-template-columns: 1fr 1fr; gap: 6px; font-size: 12px;">
+                <div><span style="color:#64748b;">Flood Depth:</span> <strong style="color: ${tierColor};">${depth > 0 ? depth.toFixed(2) + " m" : "Dry"}</strong></div>
+                <div><span style="color:#64748b;">Ground DEM:</span> <strong>${Number(props.ground_elev_m || 0).toFixed(1)} m</strong></div>
+                <div><span style="color:#64748b;">Footprint:</span> <strong>${Number(props.footprint_sqm || 0).toFixed(0)} m²</strong></div>
+                <div><span style="color:#64748b;">Extrusion:</span> <strong>${Number(props.height_m || 5).toFixed(1)} m</strong></div>
+              </div>
+              ${isEvac ? `<div style="margin-top: 8px; padding: 6px; background: #fef2f2; border: 1px solid #fecaca; border-radius: 4px; font-size: 11px; color: #991b1b; font-weight: 600;">ALERT: Evacuation center at risk — floodwaters detected in compound.</div>` : ""}
+            </div>
+          `;
+          bldgPopup.setLngLat(e.lngLat).setHTML(html).addTo(map);
         });
 
         map.addSource("fov-viewcone", {
@@ -298,16 +391,17 @@ export default function MapViewcone({
     };
   }, []);
 
-  // Fly to camera position when user switches barangay / scenario
+  // Fly to camera position only once on initial map load
   useEffect(() => {
-    if (!mapRef.current || !mapReady) return;
+    if (!mapRef.current || !mapReady || hasInitialFlownRef.current) return;
     mapRef.current.flyTo({
       center: [cameraParams.cam_lon, cameraParams.cam_lat],
       zoom: 15.5,
       pitch: 50,
       duration: 650,
     });
-  }, [activeScenarioId, mapReady]);
+    hasInitialFlownRef.current = true;
+  }, [mapReady]);
 
   useEffect(() => {
     if (cameraMarkerRef.current) {
@@ -407,15 +501,98 @@ export default function MapViewcone({
         </div>
 
         <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+          <button
+            type="button"
+            className={isCameraLocked ? "btn-primary" : "btn-secondary"}
+            onClick={() => setIsCameraLocked((prev) => !prev)}
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: "6px",
+              backgroundColor: isCameraLocked ? "#155e3b" : undefined,
+              borderColor: isCameraLocked ? "#155e3b" : undefined,
+              color: isCameraLocked ? "#ffffff" : undefined,
+            }}
+            title={
+              isCameraLocked
+                ? "Incident pin is anchored. Click to allow repositioning pin."
+                : "Incident pin is mobile. Click anywhere on map to relocate."
+            }
+          >
+            {isCameraLocked ? <Lock size={14} /> : <MapPin size={14} />}
+            <span>{isCameraLocked ? "Pin Anchored" : "Pin Mobile"}</span>
+          </button>
           <button type="button" className="btn-secondary" onClick={handleViewWholeMontalban}>
             <Globe size={14} />
-            Whole Montalban (11 Brgys)
+            Whole Montalban
           </button>
           <button type="button" className="btn-secondary" onClick={handleRecenter}>
             <Compass size={14} />
-            Zoom to camera pin
+            Zoom to pin
           </button>
         </div>
+      </div>
+
+      {/* Infrastructure Impact Strip */}
+      <div
+        style={{
+          display: "flex",
+          gap: "8px",
+          alignItems: "center",
+          flexWrap: "wrap",
+          padding: "6px 10px",
+          backgroundColor: "var(--raised)",
+          border: "1px solid var(--border)",
+          borderRadius: "6px",
+          fontSize: "12px",
+        }}
+      >
+        <span style={{ fontWeight: 600, color: "var(--text)" }}>
+          Infras at risk:
+        </span>
+        {summary.affected_evac_centers_count > 0 && (
+          <span className="status-pill critical" style={{ fontWeight: 600, display: "inline-flex", alignItems: "center", gap: "4px" }}>
+            <AlertTriangle size={12} />
+            <span>{summary.affected_evac_centers_count} Evac Center{summary.affected_evac_centers_count > 1 ? "s" : ""} Compromised</span>
+          </span>
+        )}
+        {summary.affected_schools_count > 0 && (
+          <span className="status-pill warning" style={{ display: "inline-flex", alignItems: "center", gap: "4px" }}>
+            <School size={12} />
+            <span>{summary.affected_schools_count} School{summary.affected_schools_count > 1 ? "s" : ""}</span>
+          </span>
+        )}
+        {summary.affected_healthcare_count > 0 && (
+          <span className="status-pill critical" style={{ display: "inline-flex", alignItems: "center", gap: "4px" }}>
+            <HeartPulse size={12} />
+            <span>{summary.affected_healthcare_count} Clinic / Health Unit</span>
+          </span>
+        )}
+        {summary.affected_civic_count > 0 && (
+          <span className="status-pill neutral" style={{ display: "inline-flex", alignItems: "center", gap: "4px" }}>
+            <Landmark size={12} />
+            <span>{summary.affected_civic_count} Civic Facility</span>
+          </span>
+        )}
+        {summary.affected_commercial_count > 0 && (
+          <span className="status-pill neutral" style={{ display: "inline-flex", alignItems: "center", gap: "4px" }}>
+            <Building2 size={12} />
+            <span>{summary.affected_commercial_count} Commercial</span>
+          </span>
+        )}
+        {summary.affected_residential_count > 0 && (
+          <span className="status-pill neutral" style={{ display: "inline-flex", alignItems: "center", gap: "4px" }}>
+            <Home size={12} />
+            <span>{summary.affected_residential_count} Homes</span>
+          </span>
+        )}
+        {summary.affected_structures === 0 && (
+          <span style={{ color: "var(--muted)" }}>No structures within simulated flood zone.</span>
+        )}
+        <span style={{ marginLeft: "auto", fontSize: "11px", color: "var(--muted)", display: "inline-flex", alignItems: "center", gap: "4px" }}>
+          <Info size={12} />
+          <span>Click any 3D footprint for depth & facility data</span>
+        </span>
       </div>
 
       {/* MapLibre 3D Canvas */}

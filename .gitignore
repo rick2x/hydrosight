@@ -48,7 +48,10 @@ pnpm-debug.log*
 outputs/
 backend/outputs/
 backend/cache/
+backend/data/*_enriched.parquet
 backend/data/photos/upload_*.jpg
+backend/data/sample_photos/upload_*.jpg
+backend/data/sample_photos/upload_*.png
 backend/data/photos/upload_*.png
 backend/data/photos/*_muse_surge.jpg
 

@@ -35,6 +35,7 @@ class AnalyzePhotoResponse(BaseModel):
     masks: List[SAMMaskObject]
     visual_gauge: VisualGaugeResult
     self_check_triggered: bool = False
+    initial_confidence_score: Optional[float] = None
     prompts_used: List[str]
     model_chain: List[str]
     cached: bool = False
@@ -67,6 +68,15 @@ class InundatedStructureSummary(BaseModel):
     affected_structures: int = Field(0, description="OSM footprints inside any DEM flood zone")
     affected_footprint_sqm: float = Field(0.0, description="Total roof footprint area of affected structures")
     building_source: str = Field("OSM Buildings.shp", description="Building footprint dataset used")
+    affected_schools_count: int = Field(0, description="Number of educational institutions affected")
+    affected_healthcare_count: int = Field(0, description="Number of hospitals/clinics/health units affected")
+    affected_civic_count: int = Field(0, description="Number of government/barangay/civic centers affected")
+    affected_evac_centers_count: int = Field(0, description="Number of designated evacuation centers compromised")
+    affected_commercial_count: int = Field(0, description="Number of commercial/market/retail hubs affected")
+    affected_religious_count: int = Field(0, description="Number of churches/chapels/places of worship affected")
+    affected_residential_count: int = Field(0, description="Number of residential buildings affected")
+    compromised_evac_centers: List[str] = Field(default_factory=list, description="Names of flooded evacuation centers")
+    critical_infras: List[Dict[str, Any]] = Field(default_factory=list, description="List of key affected critical infrastructure facilities")
 
 
 class ProjectFloodResponse(BaseModel):
@@ -98,7 +108,7 @@ class TriageRouteRequest(BaseModel):
     wse_m: float = Field(..., description="Water surface elevation in meters")
     barangay: str = Field("SAN JOSE", description="Barangay name")
     max_passable_depth_m: float = Field(0.5, description="Maximum passable depth for rescue vehicle")
-    confidence_score: float = Field(0.88, description="Visual gauge confidence score")
+    confidence_score: float = Field(0.91, description="Visual gauge confidence score")
 
 
 class AgentStepLog(BaseModel):
@@ -120,6 +130,9 @@ class DispatchTicket(BaseModel):
     building_id: str
     building_name: Optional[str] = None
     building_type: Optional[str] = None
+    infra_category: Optional[str] = None
+    is_evac_center: Optional[bool] = False
+    evac_center_name: Optional[str] = None
     footprint_sqm: Optional[float] = None
     flood_depth_m: float
     wse_m: float
@@ -131,7 +144,7 @@ class DispatchTicket(BaseModel):
     evacuation_center: str
     eta_minutes: int
     tactical_directive: str
-    generated_by_model: str = "muse-glimmer (Open Weights)"
+    generated_by_model: str = "muse-spark-1.1 (Meta API)"
 
 
 class OpenWeightTelemetry(BaseModel):

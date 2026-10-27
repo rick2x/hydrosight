@@ -19,6 +19,7 @@ from rasterio.transform import from_origin
 from rasterio.windows import Window, from_bounds
 from shapely.geometry import LineString, MultiPolygon, Point, Polygon, box, mapping, shape
 from shapely.ops import unary_union
+from scipy.ndimage import label
 
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data"
@@ -747,44 +748,47 @@ def project_photo_to_flood_shapefile(
         if win.width >= 3 and win.height >= 3:
             dem_sub_raw = src.read(1, window=win)
             dem_sub = _bare_earth_filter_3x3(dem_sub_raw, src.nodata)
-            dem_macro = _box_blur_2d(dem_sub, radius=4)
             win_transform = src.window_transform(win)
 
-            rows_idx, cols_idx = np.indices(dem_sub.shape)
-            xs = win_transform.c + (cols_idx + 0.5) * win_transform.a
-            ys = win_transform.f + (rows_idx + 0.5) * win_transform.e
-
-            vx = target_x - cam_x
-            vy = target_y - cam_y
-            seg_len_sq = max(1.0, vx * vx + vy * vy)
-            t_proj = np.clip(((xs - cam_x) * vx + (ys - cam_y) * vy) / seg_len_sq, 0.0, 1.0)
-            proj_x = cam_x + t_proj * vx
-            proj_y = cam_y + t_proj * vy
-
-            dist_to_ray = np.hypot(xs - proj_x, ys - proj_y)
-            dist_to_target = np.hypot(xs - target_x, ys - target_y)
-            basin_dist = np.minimum(dist_to_target, dist_to_ray * 1.12)
-
-            # Local micro-topography relative to the hydraulic grade line (valley slope + target datum)
-            hgl_datum = 0.76 * dem_macro + 0.24 * float(ground_elev)
-            local_relief = (dem_sub - hgl_datum) * 0.48
-            # Suppress SRTM rooftop spikes inside the camera-to-target street corridor
-            corridor_atten = np.clip(dist_to_ray / 58.0, 0.0, 1.0)
-            effective_relief = np.where(local_relief > 0.0, local_relief * corridor_atten, local_relief)
-
-            max_spread_m = float(np.clip(105.0 + water_depth_m * 115.0, 115.0, search_radius_m - 15.0))
-            radial_rise = ((basin_dist / max_spread_m) ** 1.55) * (water_depth_m + 0.12)
-            core_boost = np.clip(1.0 - basin_dist / 68.0, 0.0, 1.0) * (0.14 * water_depth_m)
-
             valid_dem = (dem_sub_raw != src.nodata) & (dem_sub_raw > -100)
-            depth_grid = np.where(
-                valid_dem,
-                np.maximum(0.0, float(water_depth_m) + core_boost - effective_relief - radial_rise),
-                0.0,
-            )
+            # Physical depth: WSE - bare-earth DEM elevation per SPEC.md
+            raw_depth_grid = np.where(valid_dem, np.maximum(0.0, float(wse) - dem_sub), 0.0)
 
-            mask_total = depth_grid > 0.06
-            mask_med_plus = depth_grid > 0.50
+            # Connected flood fill: cells where bare-earth DEM <= WSE and depth >= 0.05m
+            flooded_cells = valid_dem & (dem_sub <= wse) & (raw_depth_grid >= 0.05)
+            lbl, num_features = label(flooded_cells)
+
+            inv_win = ~win_transform
+            tc_f, tr_f = inv_win * (target_x, target_y)
+            tc = int(np.clip(np.round(tc_f), 0, dem_sub.shape[1] - 1))
+            tr = int(np.clip(np.round(tr_f), 0, dem_sub.shape[0] - 1))
+
+            target_lbl = lbl[tr, tc]
+            if target_lbl == 0:
+                r_min = max(0, tr - 3)
+                r_max = min(dem_sub.shape[0], tr + 4)
+                c_min = max(0, tc - 3)
+                c_max = min(dem_sub.shape[1], tc + 4)
+                sub_lbl = lbl[r_min:r_max, c_min:c_max]
+                non_zero = sub_lbl[sub_lbl > 0]
+                if len(non_zero) > 0:
+                    target_lbl = np.bincount(non_zero).argmax()
+
+            cc_f, cr_f = inv_win * (cam_x, cam_y)
+            cc = int(np.clip(np.round(cc_f), 0, dem_sub.shape[1] - 1))
+            cr = int(np.clip(np.round(cr_f), 0, dem_sub.shape[0] - 1))
+            cam_lbl = lbl[cr, cc]
+
+            connected_ids = [i for i in [target_lbl, cam_lbl] if i > 0]
+            if connected_ids:
+                connected_mask = np.isin(lbl, connected_ids)
+            else:
+                connected_mask = flooded_cells
+
+            depth_grid = np.where(connected_mask, raw_depth_grid, 0.0)
+
+            mask_total = depth_grid >= 0.05
+            mask_med_plus = depth_grid >= 0.50
             mask_crit = depth_grid > 1.50
 
             clean_total = _mask_to_clean_zone_geom(
@@ -966,10 +970,10 @@ def project_photo_to_flood_shapefile(
 
 
 BUILDINGS_SHP_PATH = DATA_DIR / "Buildings.shp"
+ENRICHED_BUILDINGS_PATH = DATA_DIR / "rodriguez_buildings_enriched.parquet"
 _OSM_BUILDINGS_GDF: Optional[gpd.GeoDataFrame] = None
 _OSM_BUILDINGS_LOCK = threading.Lock()
 
-# Visual-only extrusion heights for the 3D map (OSM footprints carry no height/levels data)
 _TYPE_DISPLAY_HEIGHT_M = {
     "school": 9.0,
     "college": 9.0,
@@ -984,14 +988,25 @@ _TYPE_DISPLAY_HEIGHT_M = {
     "garage": 3.0,
     "shed": 3.0,
     "roof": 3.5,
+    "education": 9.0,
+    "healthcare": 10.0,
+    "emergency_civic": 8.0,
+    "religious": 10.0,
+    "commercial_logistics": 8.0,
+    "residential": 5.0,
 }
 
 
 def _load_osm_buildings() -> Optional[gpd.GeoDataFrame]:
     """
-    Loads the real OSM building footprints from backend/data/Buildings.shp (EPSG:32651)
-    once, and samples each footprint's ground elevation from the 10 m DEM (3x3 minimum
-    around the centroid to strip SRTM rooftop/canopy bias).
+    Loads the real OSM building footprints from backend/data/Buildings.shp (or cached
+    rodriguez_buildings_enriched.parquet). Every footprint is enriched with:
+      - building_id, building_name, building_type
+      - infra_category (healthcare, education, emergency_civic, religious, commercial_logistics, residential)
+      - is_evac_center, evac_center_name (matched against evacuationcenters.csv)
+      - barangay (spatially joined against political_boundary_rodriguez.shp)
+      - footprint_sqm, height_m
+      - ground_elev_m (3x3 DEM bare-earth minimum)
     """
     global _OSM_BUILDINGS_GDF
     if _OSM_BUILDINGS_GDF is not None:
@@ -1000,9 +1015,27 @@ def _load_osm_buildings() -> Optional[gpd.GeoDataFrame]:
     with _OSM_BUILDINGS_LOCK:
         if _OSM_BUILDINGS_GDF is not None:
             return _OSM_BUILDINGS_GDF
+
+        # 1. Fast path: load pre-enriched parquet if available
+        if ENRICHED_BUILDINGS_PATH.exists():
+            try:
+                gdf = gpd.read_parquet(ENRICHED_BUILDINGS_PATH)
+                required = [
+                    "building_id", "building_name", "building_type", "infra_category",
+                    "is_evac_center", "evac_center_name", "barangay", "footprint_sqm",
+                    "height_m", "ground_elev_m", "geometry"
+                ]
+                if all(col in gdf.columns for col in required):
+                    _ = gdf.sindex
+                    _OSM_BUILDINGS_GDF = gdf
+                    return _OSM_BUILDINGS_GDF
+            except Exception:
+                pass
+
         if not BUILDINGS_SHP_PATH.exists():
             return None
 
+        # 2. Enrich raw Buildings.shp
         gdf = gpd.read_file(BUILDINGS_SHP_PATH)
         if gdf.crs is None or gdf.crs.to_epsg() != 32651:
             gdf = gdf.set_crs("EPSG:32651", allow_override=True) if gdf.crs is None else gdf.to_crs("EPSG:32651")
@@ -1010,14 +1043,97 @@ def _load_osm_buildings() -> Optional[gpd.GeoDataFrame]:
 
         osm_ids = gdf["osm_id"].astype(str) if "osm_id" in gdf.columns else pd.Series(gdf.index.astype(str), index=gdf.index)
         gdf["building_id"] = "OSM-" + osm_ids
-        raw_type = gdf["type"] if "type" in gdf.columns else pd.Series([None] * len(gdf), index=gdf.index)
-        gdf["building_type"] = raw_type.fillna("building").astype(str).str.lower()
-        raw_name = gdf["name"] if "name" in gdf.columns else pd.Series([None] * len(gdf), index=gdf.index)
-        gdf["building_name"] = raw_name.fillna("").astype(str)
-        gdf["footprint_sqm"] = gdf.geometry.area.round(1)
-        gdf["height_m"] = gdf["building_type"].map(_TYPE_DISPLAY_HEIGHT_M).fillna(4.5)
 
-        # Vectorized DEM sampling at footprint centroids (3x3 neighbourhood minimum = bare-earth grade)
+        raw_type = gdf["type"].fillna("").astype(str).str.lower() if "type" in gdf.columns else pd.Series([""] * len(gdf), index=gdf.index)
+        raw_name = gdf["name"].fillna("").astype(str) if "name" in gdf.columns else pd.Series([""] * len(gdf), index=gdf.index)
+        name_lower = raw_name.str.lower()
+        gdf["building_name"] = raw_name
+
+        # Spatial join with political boundaries
+        brgy_path = ROOT_DIR / "boundary" / "political_boundary_rodriguez.shp"
+        if brgy_path.exists():
+            try:
+                brgy = gpd.read_file(brgy_path)
+                if brgy.crs != gdf.crs:
+                    brgy = brgy.to_crs(gdf.crs)
+                joined_brgy = gpd.sjoin(gdf, brgy[["Barangay", "geometry"]], how="left", predicate="intersects")
+                joined_brgy = joined_brgy[~joined_brgy.index.duplicated(keep="first")]
+                gdf["barangay"] = joined_brgy["Barangay"].fillna("SAN JOSE").astype(str).str.upper()
+            except Exception:
+                gdf["barangay"] = "SAN JOSE"
+        else:
+            gdf["barangay"] = "SAN JOSE"
+
+        # Match with official evacuation centers
+        gdf["evac_center_name"] = ""
+        gdf["is_evac_center"] = False
+        ec_path = DATA_DIR / "evacuationcenters.csv"
+        if ec_path.exists():
+            try:
+                ec_df = pd.read_csv(ec_path)
+                ec_pts = gpd.GeoDataFrame(
+                    ec_df,
+                    geometry=[Point(xy) for xy in zip(ec_df["x"], ec_df["y"])],
+                    crs="EPSG:4326"
+                ).to_crs(gdf.crs)
+                ec_match = gpd.sjoin_nearest(gdf, ec_pts, max_distance=35, how="left", distance_col="ec_dist_m")
+                ec_match = ec_match[~ec_match.index.duplicated(keep="first")]
+                gdf["evac_center_name"] = ec_match["ec"].fillna("").astype(str)
+                gdf["is_evac_center"] = gdf["evac_center_name"] != ""
+            except Exception:
+                pass
+
+        # Infrastructure categorization
+        infra_cat = pd.Series("residential", index=gdf.index)
+        is_health = (
+            raw_type.isin(["hospital", "clinic"]) |
+            name_lower.str.contains("hospital|clinic|health center|rural health|rhu|medical", regex=True)
+        )
+        infra_cat[is_health] = "healthcare"
+
+        is_edu = (
+            raw_type.isin(["school", "university", "college", "kindergarten"]) |
+            name_lower.str.contains("school|elementary|high school|college|university|academy|learning center", regex=True)
+        )
+        infra_cat[is_edu] = "education"
+
+        is_civic = (
+            raw_type.isin(["public", "civic"]) |
+            name_lower.str.contains("barangay hall|brgy hall|municipal hall|municipal gym|police|pnp|fire|bfp|mdrrmo|disaster|covered court|gymnasium|court|tourism office|hall|guard house|guardhouse", regex=True)
+        )
+        infra_cat[is_civic] = "emergency_civic"
+
+        is_religion = (
+            raw_type.isin(["church", "chapel", "mosque"]) |
+            name_lower.str.contains("church|parish|chapel|kapilya|mosque|iglesia|cathedral", regex=True)
+        )
+        infra_cat[is_religion] = "religious"
+
+        is_comm = (
+            raw_type.isin(["commercial", "retail", "supermarket", "warehouse", "industrial"]) |
+            name_lower.str.contains("market|supermarket|mall|center|commercial|gasoline|caltex|seaoil|petron|shell|store|warehouse|terminal", regex=True)
+        )
+        infra_cat[is_comm] = "commercial_logistics"
+
+        # Evacuation center facilities are critical civic/emergency infra
+        infra_cat[gdf["is_evac_center"] & ~is_health & ~is_edu & ~is_civic] = "emergency_civic"
+        gdf["infra_category"] = infra_cat
+
+        type_labels = {
+            "healthcare": "Hospital / Clinic",
+            "education": "School / Educational",
+            "emergency_civic": "Civic / Emergency Center",
+            "religious": "Place of Worship",
+            "commercial_logistics": "Commercial / Logistics Hub",
+            "residential": "Residential Building",
+        }
+        clean_raw_type = raw_type.replace({"": np.nan})
+        gdf["building_type"] = clean_raw_type.fillna(gdf["infra_category"].map(type_labels))
+
+        gdf["height_m"] = raw_type.map(_TYPE_DISPLAY_HEIGHT_M).fillna(gdf["infra_category"].map(_TYPE_DISPLAY_HEIGHT_M)).fillna(5.0)
+        gdf["footprint_sqm"] = gdf.geometry.area.round(1)
+
+        # Vectorized bare-earth DEM sampling
         cents = gdf.geometry.centroid
         with rasterio.open(ensure_dem_exists()) as src:
             dem = src.read(1).astype(np.float32)
@@ -1034,11 +1150,20 @@ def _load_osm_buildings() -> Optional[gpd.GeoDataFrame]:
         with np.errstate(all="ignore"):
             ground = np.nanmin(stack, axis=0)
         fallback = np.nanmedian(dem) if np.isfinite(np.nanmedian(dem)) else 30.0
-        gdf["ground_elev_m"] = np.round(np.where(np.isfinite(ground), ground, fallback), 2)
+        gdf["ground_elev_m"] = np.round(np.where(np.isfinite(ground), ground, fallback), 2).astype(np.float32)
 
-        keep = ["building_id", "building_name", "building_type", "footprint_sqm", "height_m", "ground_elev_m", "geometry"]
+        keep = [
+            "building_id", "building_name", "building_type", "infra_category",
+            "is_evac_center", "evac_center_name", "barangay", "footprint_sqm",
+            "height_m", "ground_elev_m", "geometry"
+        ]
         gdf = gdf[keep].reset_index(drop=True)
-        _ = gdf.sindex  # build spatial index once
+        try:
+            gdf.to_parquet(ENRICHED_BUILDINGS_PATH)
+        except Exception:
+            pass
+
+        _ = gdf.sindex
         _OSM_BUILDINGS_GDF = gdf
         return _OSM_BUILDINGS_GDF
 
@@ -1059,12 +1184,11 @@ def get_inundated_structures(
     radius_m: float = 380.0,
 ) -> Dict[str, Any]:
     """
-    Spatial join between the 3 DEM flood depth zones (<0.5 m green, 0.5-1.5 m orange,
-    >1.5 m red) and the REAL OSM building footprints in backend/data/Buildings.shp.
-
-    Each footprint's depth = WSE - DEM ground elevation at the footprint, clamped to the
-    depth band of the zone polygon it intersects. No occupancy/resident figures are
-    produced because no population-per-building data source is loaded.
+    Spatial join between the DEM flood extent and the enriched OSM building footprints
+    (Buildings.shp), accurately identifying affected infrastructures:
+      - Critical facilities: schools, clinics, barangay/municipal halls, evacuation centers
+      - Physical flood depth: WSE - bare-earth DEM ground elevation
+      - Risk tiers: Critical (>1.5m), Medium (0.5m-1.5m), Low (<0.5m), Safe
     """
     if center_utm is None:
         zone = next((z for z in SCENARIO_ZONES if z["barangay"].upper() == barangay.upper()), SCENARIO_ZONES[0])
@@ -1074,13 +1198,21 @@ def get_inundated_structures(
     osm = _load_osm_buildings()
     if osm is None or osm.empty:
         sub_gdf = gpd.GeoDataFrame(
-            {"building_id": [], "building_name": [], "building_type": [], "footprint_sqm": [],
+            {"building_id": [], "building_name": [], "building_type": [], "infra_category": [],
+             "is_evac_center": [], "evac_center_name": [], "barangay": [], "footprint_sqm": [],
              "height_m": [], "ground_elev_m": []},
             geometry=[],
             crs="EPSG:32651",
         )
     else:
-        query_box = box(cx - radius_m, cy - radius_m, cx + radius_m, cy + radius_m)
+        minx, miny, maxx, maxy = cx - radius_m, cy - radius_m, cx + radius_m, cy + radius_m
+        if flood_gdf_utm is not None and not flood_gdf_utm.empty:
+            f_minx, f_miny, f_maxx, f_maxy = flood_gdf_utm.total_bounds
+            minx = min(minx, f_minx - 60.0)
+            miny = min(miny, f_miny - 60.0)
+            maxx = max(maxx, f_maxx + 60.0)
+            maxy = max(maxy, f_maxy + 60.0)
+        query_box = box(minx, miny, maxx, maxy)
         idx = osm.sindex.query(query_box, predicate="intersects")
         sub_gdf = osm.iloc[idx].copy()
 
@@ -1096,28 +1228,27 @@ def get_inundated_structures(
     has_zones = any(not g.is_empty for g in zone_geoms.values())
     n = len(sub_gdf)
     tiers = np.array(["safe"] * n, dtype=object)
+    raw_depth = np.round(np.maximum(0.0, float(wse_m) - sub_gdf["ground_elev_m"].to_numpy()), 2) if n > 0 else np.array([])
 
     if n > 0:
         if has_zones:
-            # Highest tier wins: assign low -> medium -> critical so deeper zones overwrite
+            # Building intersects flood polygon and has physical depth >= 0.05m
             for tier in ("low", "medium", "critical"):
                 geom = zone_geoms[tier]
                 if geom.is_empty:
                     continue
                 hit = sub_gdf.geometry.intersects(geom).to_numpy()
-                tiers[hit] = tier
+                tiers[hit & (raw_depth >= 0.05)] = tier
         else:
-            raw = float(wse_m) - sub_gdf["ground_elev_m"].to_numpy()
-            tiers = np.where(raw > 1.5, "critical", np.where(raw >= 0.5, "medium", np.where(raw > 0.05, "low", "safe")))
+            tiers = np.where(raw_depth > 1.5, "critical", np.where(raw_depth >= 0.5, "medium", np.where(raw_depth >= 0.05, "low", "safe")))
 
-    raw_depth = float(wse_m) - sub_gdf["ground_elev_m"].to_numpy() if n > 0 else np.array([])
-    depths = np.zeros(n, dtype=float)
-    colors = np.array(["#94a3b8"] * n, dtype=object)
-    for tier, (lo, hi, col) in _TIER_RANGES.items():
-        m = tiers == tier
-        if np.any(m):
-            depths[m] = np.clip(raw_depth[m], lo, hi)
-            colors[m] = col
+    # True unclipped physical building depth: WSE - ground_elev_m per SPEC.md
+    depths = np.where(tiers != "safe", raw_depth, 0.0)
+    colors = np.where(
+        tiers == "critical", "#c4242a",
+        np.where(tiers == "medium", "#d97706",
+        np.where(tiers == "low", "#1e7b4f", "#94a3b8"))
+    )
 
     sub_gdf["risk_tier"] = tiers
     sub_gdf["flood_depth_m"] = np.round(depths, 2)
@@ -1131,7 +1262,75 @@ def get_inundated_structures(
     affected_mask = np.isin(tiers, ["low", "medium", "critical"])
     affected_footprint_sqm = round(float(sub_gdf.loc[affected_mask, "footprint_sqm"].sum()), 1) if n > 0 else 0.0
 
+    affected_bldgs = sub_gdf[affected_mask] if n > 0 else sub_gdf
+    affected_count = int(affected_mask.sum())
+
+    # Infrastructure breakdown
+    if affected_count > 0:
+        schools_count = int((affected_bldgs["infra_category"] == "education").sum())
+        healthcare_count = int((affected_bldgs["infra_category"] == "healthcare").sum())
+        civic_count = int((affected_bldgs["infra_category"] == "emergency_civic").sum())
+        commercial_count = int((affected_bldgs["infra_category"] == "commercial_logistics").sum())
+        religious_count = int((affected_bldgs["infra_category"] == "religious").sum())
+        residential_count = int((affected_bldgs["infra_category"] == "residential").sum())
+
+        evac_sub = affected_bldgs[affected_bldgs["is_evac_center"] == True]
+        evac_count = int(len(evac_sub))
+        compromised_evac_centers = [name for name in evac_sub["evac_center_name"].unique() if name]
+    else:
+        schools_count = healthcare_count = civic_count = commercial_count = religious_count = residential_count = evac_count = 0
+        compromised_evac_centers = []
+
     sub_wgs84 = sub_gdf.to_crs("EPSG:4326")
+
+    # Critical infrastructure highlight records
+    critical_infras = []
+    if affected_count > 0:
+        special_mask = (
+            (affected_bldgs["is_evac_center"] == True) |
+            (affected_bldgs["infra_category"] != "residential") |
+            (affected_bldgs["building_name"] != "")
+        )
+        spec = affected_bldgs[special_mask].copy()
+        if spec.empty:
+            spec = affected_bldgs.copy()
+
+        # Prioritize evacuation centers, healthcare, emergency civic, education, then depth
+        cat_order = {"healthcare": 1, "emergency_civic": 2, "education": 3, "religious": 4, "commercial_logistics": 5, "residential": 6}
+        spec["_cat_rank"] = spec["infra_category"].map(cat_order).fillna(9)
+        spec["_evac_rank"] = np.where(spec["is_evac_center"], 0, 1)
+        spec_sorted = spec.sort_values(by=["_evac_rank", "_cat_rank", "flood_depth_m"], ascending=[True, True, False])
+
+        for _, r in spec_sorted.head(10).iterrows():
+            name = r["building_name"]
+            if not name and r["is_evac_center"]:
+                name = r["evac_center_name"]
+            if not name:
+                name = f"{r['building_type']} ({r['building_id']})"
+            critical_infras.append({
+                "building_id": str(r["building_id"]),
+                "building_name": str(name),
+                "building_type": str(r["building_type"]),
+                "infra_category": str(r["infra_category"]),
+                "barangay": str(r["barangay"]),
+                "is_evac_center": bool(r["is_evac_center"]),
+                "evac_center_name": str(r["evac_center_name"]),
+                "flood_depth_m": float(r["flood_depth_m"]),
+                "ground_elev_m": float(r["ground_elev_m"]),
+                "footprint_sqm": float(r["footprint_sqm"]),
+                "risk_tier": str(r["risk_tier"]),
+            })
+
+    # Critical buildings for Muse Glimmer dispatch tickets (top 6 prioritized by infra importance and depth)
+    if affected_count > 0:
+        aff_wgs84 = sub_wgs84[affected_mask].copy()
+        aff_wgs84["_evac_rank"] = np.where(aff_wgs84["is_evac_center"], 0, 1)
+        cat_order = {"healthcare": 1, "emergency_civic": 2, "education": 3, "religious": 4, "commercial_logistics": 5, "residential": 6}
+        aff_wgs84["_cat_rank"] = aff_wgs84["infra_category"].map(cat_order).fillna(9)
+        aff_sorted = aff_wgs84.sort_values(by=["_evac_rank", "_cat_rank", "flood_depth_m"], ascending=[True, True, False])
+        critical_buildings = aff_sorted.drop(columns=["geometry", "_evac_rank", "_cat_rank"], errors="ignore").head(6).to_dict(orient="records")
+    else:
+        critical_buildings = []
 
     summary = {
         "barangay": barangay.upper(),
@@ -1141,20 +1340,22 @@ def get_inundated_structures(
         "medium_depth_count": med_count,
         "critical_depth_count": crit_count,
         "safe_count": safe_count,
-        "affected_structures": int(affected_mask.sum()),
+        "affected_structures": affected_count,
         "affected_footprint_sqm": affected_footprint_sqm,
         "low_area_sqm": zone_areas["low"],
         "medium_area_sqm": zone_areas["medium"],
         "critical_area_sqm": zone_areas["critical"],
-        "building_source": "OSM Buildings.shp" if osm is not None else "none",
+        "building_source": "OSM Buildings.shp (Enriched)",
+        "affected_schools_count": schools_count,
+        "affected_healthcare_count": healthcare_count,
+        "affected_civic_count": civic_count,
+        "affected_evac_centers_count": evac_count,
+        "affected_commercial_count": commercial_count,
+        "affected_religious_count": religious_count,
+        "affected_residential_count": residential_count,
+        "compromised_evac_centers": compromised_evac_centers,
+        "critical_infras": critical_infras,
     }
-
-    affected = sub_wgs84[affected_mask] if n > 0 else sub_wgs84
-    critical_buildings = (
-        affected.drop(columns="geometry").sort_values("flood_depth_m", ascending=False).head(6).to_dict(orient="records")
-        if len(affected) > 0
-        else []
-    )
 
     return {
         "summary": summary,

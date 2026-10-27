@@ -13,3 +13,4 @@ osmnx>=1.9.4
 networkx>=3.3
 pillow>=10.4.0
 pyarrow>=15.0.0
+python-dotenv>=1.0.0
