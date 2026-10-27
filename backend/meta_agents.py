@@ -976,6 +976,7 @@ def analyze_water_level_with_sam3(
         cached=bool(not is_fallback and not is_custom),
         fallback_used=is_fallback,
         execution_mode=mode,
+        is_custom_upload=is_custom,
     )
 
 

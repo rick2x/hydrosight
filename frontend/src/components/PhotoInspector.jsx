@@ -1,15 +1,15 @@
 import React, { useState, useRef } from "react";
-import { Upload, Crosshair, AlertTriangle, Copy, Check, RefreshCw } from "lucide-react";
+import { Upload, Crosshair, AlertTriangle, Copy, Check, RefreshCw, Eye, EyeOff, Trash2 } from "lucide-react";
 
 const MASK_STROKES = {
-  floodwater: { stroke: "#1b6c80", fill: "rgba(27, 108, 128, 0.24)" },
-  person: { stroke: "#c4242a", fill: "rgba(196, 36, 42, 0.18)" },
-  tricycle: { stroke: "#c4242a", fill: "rgba(196, 36, 42, 0.18)" },
-  car: { stroke: "#c4242a", fill: "rgba(196, 36, 42, 0.18)" },
-  "vehicle wheel": { stroke: "#a86f0c", fill: "rgba(168, 111, 12, 0.20)" },
-  gate: { stroke: "#2f70bb", fill: "rgba(47, 112, 187, 0.16)" },
-  "building entrance": { stroke: "#2f70bb", fill: "rgba(47, 112, 187, 0.16)" },
-  "utility pole": { stroke: "#1e7b4f", fill: "rgba(30, 123, 79, 0.20)" },
+  floodwater: { stroke: "#0e7490", fill: "rgba(14, 116, 144, 0.22)" },
+  person: { stroke: "#b91c1c", fill: "rgba(185, 28, 28, 0.18)" },
+  tricycle: { stroke: "#b91c1c", fill: "rgba(185, 28, 28, 0.18)" },
+  car: { stroke: "#b91c1c", fill: "rgba(185, 28, 28, 0.18)" },
+  "vehicle wheel": { stroke: "#b45309", fill: "rgba(180, 83, 9, 0.20)" },
+  gate: { stroke: "#2f70bb", fill: "rgba(47, 112, 187, 0.18)" },
+  "building entrance": { stroke: "#2f70bb", fill: "rgba(47, 112, 187, 0.18)" },
+  "utility pole": { stroke: "#15803d", fill: "rgba(21, 128, 61, 0.20)" },
 };
 
 export default function PhotoInspector({
@@ -23,17 +23,33 @@ export default function PhotoInspector({
   photoUploadError,
   customPhotoPreview,
   onResetCustomPhoto,
+  onDeleteCustomPhoto,
+  onLoadSampleScenario,
   onSimulateSurge,
   surgeResult,
   surgeLoading,
+  floodProjection,
+  projectionLoading,
 }) {
   const [showMasks, setShowMasks] = useState(true);
   const [compareSlider, setCompareSlider] = useState(50);
   const [copiedSms, setCopiedSms] = useState(false);
   const [dragActive, setDragActive] = useState(false);
   const [imgAspect, setImgAspect] = useState(16 / 9);
+  const [showSurgeDrawer, setShowSurgeDrawer] = useState(false);
   const innerStageRef = useRef(null);
   const fileInputRef = useRef(null);
+
+  const isCustomPhoto = Boolean(customPhotoPreview || analysisResult?.is_custom_upload);
+
+  const handleDeletePhoto = () => {
+    if (fileInputRef.current) fileInputRef.current.value = "";
+    if (onDeleteCustomPhoto) {
+      onDeleteCustomPhoto();
+    } else if (onResetCustomPhoto) {
+      onResetCustomPhoto();
+    }
+  };
 
   const masks = analysisResult?.masks || scenario?.sam_masks || [];
   const gauge = analysisResult?.visual_gauge || scenario?.visual_gauge || {};
@@ -41,7 +57,7 @@ export default function PhotoInspector({
     customPhotoPreview ||
     analysisResult?.photo_url ||
     scenario?.photo_url ||
-    "/static/photos/kasiglahan_village.jpg";
+    null;
 
   const angleOffsetDeg = ((cameraParams.click_u - 0.5) * cameraParams.fov_deg).toFixed(1);
   const targetBearingDeg = (
@@ -96,22 +112,45 @@ export default function PhotoInspector({
         }}
       >
         <div>
-          <h2 style={{ fontSize: "16px", fontWeight: 600, margin: 0, color: "var(--text)" }}>
-            Street-level visual gauge (SAM 3.1 + Muse Spark 1.3)
-          </h2>
-          <p style={{ margin: "2px 0 0 0", fontSize: "13px", color: "var(--muted)" }}>
-            Upload or drop any flood photo, or click the waterline to cast a 3D ray onto the 10 m DEM
+          <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+            <h2 style={{ fontSize: "15px", fontWeight: 600, margin: 0, color: "var(--text)" }}>
+              Street-level perception (SAM 3.1 + Muse Spark 1.3)
+            </h2>
+            {isCustomPhoto ? (
+              <span className="status-badge status-warning">
+                Custom photo
+              </span>
+            ) : photoUrl ? (
+              <span className="status-badge status-neutral">
+                Benchmark sample
+              </span>
+            ) : (
+              <span className="status-badge status-neutral">
+                Standby · No photo
+              </span>
+            )}
+          </div>
+          <p style={{ margin: "2px 0 0 0", fontSize: "12.5px", color: "var(--muted)" }}>
+            {isCustomPhoto
+              ? "Custom photo active · Click waterline to cast 3D ray onto 10 m DEM"
+              : photoUrl
+              ? "Benchmark photo loaded · Click waterline to cast 3D ray onto 10 m DEM"
+              : "Upload or drop a street flood photo to begin vision perception"}
           </p>
         </div>
 
         <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
-          <button
-            type="button"
-            className="btn-secondary"
-            onClick={() => setShowMasks((prev) => !prev)}
-          >
-            {showMasks ? "Hide SAM 3.1 masks" : "Show SAM 3.1 masks"}
-          </button>
+          {photoUrl && (
+            <button
+              type="button"
+              className="btn-secondary"
+              onClick={() => setShowMasks((prev) => !prev)}
+              style={{ fontSize: "12px", padding: "0 10px" }}
+            >
+              {showMasks ? <EyeOff size={13} /> : <Eye size={13} />}
+              <span>{showMasks ? "Hide masks" : "Show masks"}</span>
+            </button>
+          )}
 
           <input
             ref={fileInputRef}
@@ -122,23 +161,44 @@ export default function PhotoInspector({
           />
           <button
             type="button"
-            className="btn-primary"
+            className="btn-secondary"
             disabled={photoUploading}
             onClick={() => fileInputRef.current?.click()}
+            style={{ fontSize: "12px", padding: "0 10px" }}
           >
-            <Upload size={14} />
-            {photoUploading ? "Analyzing photo..." : "Upload flood photo"}
+            <Upload size={13} />
+            <span>{photoUploading ? "Analyzing..." : "Upload photo"}</span>
           </button>
 
-          {customPhotoPreview && (
+          {!photoUrl && onLoadSampleScenario && (
             <button
               type="button"
               className="btn-secondary"
-              onClick={onResetCustomPhoto}
-              title="Restore default sector camera feed"
+              disabled={photoUploading}
+              onClick={() => onLoadSampleScenario("kasiglahan_village")}
+              style={{ fontSize: "12px", padding: "0 10px" }}
+              title="Load calibrated benchmark scenario"
             >
-              <RefreshCw size={13} />
-              Reset feed
+              <span>Load sample</span>
+            </button>
+          )}
+
+          {photoUrl && (
+            <button
+              type="button"
+              className="btn-secondary"
+              onClick={handleDeletePhoto}
+              title={isCustomPhoto ? "Delete uploaded photo and return to empty state" : "Clear sample photo and return to empty state"}
+              style={{
+                fontSize: "12px",
+                padding: "0 10px",
+                color: isCustomPhoto ? "var(--negative)" : "var(--muted)",
+                borderColor: isCustomPhoto ? "var(--negative-border)" : "var(--border)",
+                backgroundColor: isCustomPhoto ? "var(--negative-soft)" : "transparent",
+              }}
+            >
+              <Trash2 size={13} color={isCustomPhoto ? "var(--negative)" : "currentColor"} />
+              <span>{isCustomPhoto ? "Delete photo" : "Clear photo"}</span>
             </button>
           )}
         </div>
@@ -149,43 +209,119 @@ export default function PhotoInspector({
           style={{
             padding: "8px 12px",
             borderRadius: "6px",
-            backgroundColor: "var(--pill-critical-bg)",
-            color: "var(--pill-critical-ink)",
-            fontSize: "13px",
+            backgroundColor: "var(--negative-soft)",
+            color: "var(--negative)",
+            border: "1px solid var(--negative-border)",
+            fontSize: "12.5px",
           }}
         >
           {photoUploadError}
         </div>
       )}
 
-      {/* Outer Frame supporting both landscape (16:9) and portrait (9:16) photos without cropping */}
-      <div
-        onDragOver={(e) => {
-          e.preventDefault();
-          setDragActive(true);
-        }}
-        onDragLeave={() => setDragActive(false)}
-        onDrop={handleDrop}
-        style={{
-          position: "relative",
-          width: "100%",
-          borderRadius: "6px",
-          overflow: "hidden",
-          border: dragActive ? "2px dashed #1b6c80" : "1px solid var(--border)",
-          backgroundColor: "#eef2f5",
-          display: "flex",
-          justifyContent: "center",
-          alignItems: "center",
-          userSelect: "none",
-        }}
-      >
-        {/* Exact-Aspect-Ratio Inner Stage so SAM 3.1 normalized [0..1] boxes never shift or crop */}
+      {/* Photo Frame or Empty Dropzone */}
+      {!photoUrl ? (
+        <div
+          onDragOver={(e) => {
+            e.preventDefault();
+            setDragActive(true);
+          }}
+          onDragLeave={() => setDragActive(false)}
+          onDrop={handleDrop}
+          style={{
+            position: "relative",
+            width: "100%",
+            minHeight: "360px",
+            borderRadius: "6px",
+            border: dragActive ? "2px dashed var(--accent)" : "1px dashed var(--border-strong)",
+            backgroundColor: dragActive ? "var(--accent-soft)" : "var(--surface)",
+            display: "flex",
+            flexDirection: "column",
+            justifyContent: "center",
+            alignItems: "center",
+            padding: "36px 20px",
+            textAlign: "center",
+            userSelect: "none",
+            gap: "14px",
+          }}
+        >
+          <div
+            style={{
+              width: "48px",
+              height: "48px",
+              borderRadius: "50%",
+              backgroundColor: "var(--active)",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              color: "var(--muted)",
+            }}
+          >
+            <Upload size={22} />
+          </div>
+
+          <div>
+            <h3 style={{ margin: "0 0 4px 0", fontSize: "15px", fontWeight: 600, color: "var(--text)" }}>
+              No street photo loaded
+            </h3>
+            <p style={{ margin: 0, fontSize: "13px", color: "var(--muted)", maxWidth: "380px" }}>
+              Upload or drop a street flood photograph to detect waterlines with SAM 3.1, sample the 10 m DEM, and calculate evacuation triage.
+            </p>
+          </div>
+
+          <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap", justifyContent: "center" }}>
+            <button
+              type="button"
+              className="btn-primary"
+              disabled={photoUploading}
+              onClick={() => fileInputRef.current?.click()}
+              style={{ fontSize: "12.5px", padding: "0 16px" }}
+            >
+              <Upload size={13} />
+              <span>{photoUploading ? "Analyzing photo..." : "Upload flood photo"}</span>
+            </button>
+
+            {onLoadSampleScenario && (
+              <button
+                type="button"
+                className="btn-secondary"
+                disabled={photoUploading}
+                onClick={() => onLoadSampleScenario("kasiglahan_village")}
+                style={{ fontSize: "12.5px", padding: "0 14px" }}
+                title="Load calibrated Rodriguez benchmark scenario for demonstration"
+              >
+                <span>Load sample benchmark</span>
+              </button>
+            )}
+          </div>
+        </div>
+      ) : (
+        <div
+          onDragOver={(e) => {
+            e.preventDefault();
+            setDragActive(true);
+          }}
+          onDragLeave={() => setDragActive(false)}
+          onDrop={handleDrop}
+          style={{
+            position: "relative",
+            width: "100%",
+            borderRadius: "6px",
+            overflow: "hidden",
+            border: dragActive ? "2px dashed var(--accent)" : "1px solid var(--border)",
+            backgroundColor: "#eef2f5",
+            display: "flex",
+            justifyContent: "center",
+            alignItems: "center",
+            userSelect: "none",
+          }}
+        >
         <div
           ref={innerStageRef}
           onClick={handleImageClick}
           role="button"
           tabIndex={0}
-          aria-label="Street flood photo target selector. Click to set horizontal ray position u or drop an image file."
+          aria-label="Street flood photo target selector. Click to set horizontal ray position u."
           onKeyDown={(e) => {
             if (e.key === "ArrowLeft") {
               onPhotoClickTarget(Math.max(0.05, Number((cameraParams.click_u - 0.05).toFixed(2))), cameraParams.click_v);
@@ -196,7 +332,7 @@ export default function PhotoInspector({
           style={{
             position: "relative",
             aspectRatio: `${imgAspect}`,
-            maxHeight: "420px",
+            maxHeight: "410px",
             maxWidth: "100%",
             width: imgAspect >= 1.2 ? "100%" : "auto",
             cursor: "crosshair",
@@ -219,7 +355,61 @@ export default function PhotoInspector({
             }}
           />
 
-          {/* Optional Side-by-Side +1.5m Typhoon Surge Forecast Overlay (Muse Image 1.0) */}
+          {/* Standby prompt banner */}
+          {!floodProjection && !photoUploading && !projectionLoading && (
+            <div
+              style={{
+                position: "absolute",
+                top: "12px",
+                left: "50%",
+                transform: "translateX(-50%)",
+                backgroundColor: "rgba(15, 23, 42, 0.88)",
+                color: "#ffffff",
+                padding: "6px 14px",
+                borderRadius: "20px",
+                fontSize: "12px",
+                fontWeight: 500,
+                display: "flex",
+                alignItems: "center",
+                gap: "8px",
+                pointerEvents: "none",
+                zIndex: 6,
+                whiteSpace: "nowrap",
+              }}
+            >
+              <Crosshair size={13} color="#38bdf8" />
+              <span>Click waterline to cast 3D projection</span>
+            </div>
+          )}
+
+          {/* Projection loading indicator */}
+          {projectionLoading && (
+            <div
+              style={{
+                position: "absolute",
+                top: "12px",
+                left: "50%",
+                transform: "translateX(-50%)",
+                backgroundColor: "rgba(15, 23, 42, 0.90)",
+                color: "#38bdf8",
+                padding: "6px 14px",
+                borderRadius: "20px",
+                fontSize: "12px",
+                fontWeight: 600,
+                display: "flex",
+                alignItems: "center",
+                gap: "8px",
+                pointerEvents: "none",
+                zIndex: 6,
+                whiteSpace: "nowrap",
+              }}
+            >
+              <RefreshCw size={13} className="spin" />
+              <span>Projecting 3D DEM flood extent & triage...</span>
+            </div>
+          )}
+
+          {/* Side-by-Side Typhoon Surge Forecast Overlay */}
           {surgeResult && (
             <div
               style={{
@@ -231,7 +421,7 @@ export default function PhotoInspector({
             >
               <img
                 src={surgeResult.surge_forecast_image_url}
-                alt="Muse Image +1.5m typhoon surge visual forecast"
+                alt="Muse Image +1.5m typhoon surge forecast"
                 style={{
                   width: "100%",
                   height: "100%",
@@ -242,7 +432,7 @@ export default function PhotoInspector({
             </div>
           )}
 
-          {/* SVG Overlay for SAM 3.1 Polygons, Bounding Boxes, and Ray Reticle */}
+          {/* SVG Overlay for SAM 3.1 Polygons and Crosshair */}
           <svg
             viewBox="0 0 1000 562.5"
             preserveAspectRatio="none"
@@ -257,8 +447,8 @@ export default function PhotoInspector({
             {showMasks &&
               masks.map((m) => {
                 const style = MASK_STROKES[m.concept] || {
-                  stroke: "#1b6c80",
-                  fill: "rgba(27, 108, 128, 0.2)",
+                  stroke: "#0e7490",
+                  fill: "rgba(14, 116, 144, 0.2)",
                 };
                 const pts = (m.polygon_norm || [])
                   .map(([u, v]) => `${(u * 1000).toFixed(1)},${(v * 562.5).toFixed(1)}`)
@@ -271,7 +461,7 @@ export default function PhotoInspector({
                         points={pts}
                         fill={style.fill}
                         stroke={style.stroke}
-                        strokeWidth="2.5"
+                        strokeWidth="2"
                       />
                     )}
                     <rect
@@ -281,23 +471,23 @@ export default function PhotoInspector({
                       height={(by2 - by1) * 562.5}
                       fill="none"
                       stroke={style.stroke}
-                      strokeWidth="1.5"
-                      strokeDasharray="5,3"
+                      strokeWidth="1.2"
+                      strokeDasharray="4,3"
                     />
                     <rect
                       x={bx1 * 1000}
-                      y={Math.max(4, by1 * 562.5 - 24)}
-                      width={Math.min(240, (m.concept.length + 10) * 8.5)}
-                      height="22"
-                      fill="#131416"
+                      y={Math.max(4, by1 * 562.5 - 20)}
+                      width={Math.min(220, (m.concept.length + 8) * 8)}
+                      height="18"
+                      fill="#0f172a"
                       rx="3"
                     />
                     <text
-                      x={bx1 * 1000 + 6}
-                      y={Math.max(19, by1 * 562.5 - 9)}
+                      x={bx1 * 1000 + 5}
+                      y={Math.max(17, by1 * 562.5 - 7)}
                       fill="#ffffff"
-                      fontSize="13"
-                      fontFamily="IBM Plex Sans, sans-serif"
+                      fontSize="11.5"
+                      fontFamily="var(--font)"
                       fontWeight="500"
                     >
                       {m.concept} · {Math.round((m.confidence || 0.9) * 100)}%
@@ -306,74 +496,57 @@ export default function PhotoInspector({
                 );
               })}
 
-            {/* Vertical Ray Bearing Indicator Line at click_u */}
+            {/* Vertical Ray Bearing Indicator Line */}
             <line
               x1={cameraParams.click_u * 1000}
               y1={0}
               x2={cameraParams.click_u * 1000}
               y2={562.5}
-              stroke="#131416"
-              strokeWidth="2"
+              stroke="#0f172a"
+              strokeWidth="1.6"
               strokeDasharray="4,4"
             />
 
-            {/* Target Waterline Click Crosshair */}
+            {/* Waterline Crosshair */}
             <circle
               cx={cameraParams.click_u * 1000}
               cy={cameraParams.click_v * 562.5}
-              r="11"
-              fill="rgba(255, 255, 255, 0.88)"
-              stroke="#c4242a"
-              strokeWidth="2.5"
+              r="10"
+              fill="rgba(255, 255, 255, 0.9)"
+              stroke="#b91c1c"
+              strokeWidth="2"
             />
             <circle
               cx={cameraParams.click_u * 1000}
               cy={cameraParams.click_v * 562.5}
-              r="3.5"
-              fill="#c4242a"
+              r="3"
+              fill="#b91c1c"
             />
           </svg>
         </div>
-
-        {photoUploading && (
-          <div
-            style={{
-              position: "absolute",
-              top: "10px",
-              right: "10px",
-              backgroundColor: "rgba(19, 20, 22, 0.88)",
-              color: "#ffffff",
-              padding: "6px 10px",
-              borderRadius: "4px",
-              fontSize: "13px",
-              fontWeight: 500,
-            }}
-          >
-            Running SAM 3.1 + Muse Spark 1.3 on uploaded photo...
-          </div>
-        )}
 
         {/* Bottom HUD Telemetry Strip */}
         <div
           style={{
             position: "absolute",
-            left: "10px",
-            bottom: "10px",
+            left: "8px",
+            bottom: "8px",
             backgroundColor: "rgba(255, 255, 255, 0.94)",
             border: "1px solid var(--border)",
             borderRadius: "4px",
-            padding: "4px 8px",
-            fontSize: "13px",
+            padding: "3px 8px",
+            fontSize: "12px",
             color: "var(--text)",
             display: "flex",
             alignItems: "center",
-            gap: "10px",
+            gap: "8px",
             flexWrap: "wrap",
+            zIndex: 5,
           }}
         >
           <span style={{ display: "inline-flex", alignItems: "center", gap: "4px", fontWeight: 500 }}>
-            <Crosshair size={13} />
-            Ray target u = <span className="mono-id">{cameraParams.click_u.toFixed(2)}</span>
+            <Crosshair size={12} color="var(--accent)" />
+            Target u = <span className="mono-id">{cameraParams.click_u.toFixed(2)}</span>
           </span>
           <span style={{ color: "var(--muted)" }}>
             Δθ = <span className="num">{angleOffsetDeg}°</span>
@@ -381,28 +554,26 @@ export default function PhotoInspector({
           <span style={{ color: "var(--muted)" }}>
             Bearing = <span className="num">{targetBearingDeg}°</span>
           </span>
-          {customPhotoPreview && (
-            <span className="status-pill positive">Custom uploaded photo active</span>
-          )}
         </div>
       </div>
+      )}
 
-      {/* Camera Frustum & Hydrological Override Sliders */}
+      {/* Compact Camera Calibration & Depth Override Sliders */}
       <div
         style={{
           display: "grid",
-          gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))",
+          gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
           gap: "12px",
-          padding: "12px",
+          padding: "10px 12px",
           backgroundColor: "var(--raised)",
           borderRadius: "6px",
           border: "1px solid var(--border)",
         }}
       >
         <div>
-          <div style={{ display: "flex", justifyContent: "space-between", fontSize: "13px", marginBottom: "4px" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", fontSize: "12px", marginBottom: "3px" }}>
             <label htmlFor="slider-azimuth" style={{ fontWeight: 500, color: "var(--text)" }}>
-              Camera azimuth
+              Azimuth
             </label>
             <span className="num" style={{ color: "var(--muted)" }}>
               {cameraParams.azimuth_deg}°
@@ -416,12 +587,11 @@ export default function PhotoInspector({
             step="1"
             value={cameraParams.azimuth_deg}
             onChange={(e) => onUpdateCameraParams({ azimuth_deg: Number(e.target.value) })}
-            style={{ width: "100%" }}
           />
         </div>
 
         <div>
-          <div style={{ display: "flex", justifyContent: "space-between", fontSize: "13px", marginBottom: "4px" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", fontSize: "12px", marginBottom: "3px" }}>
             <label htmlFor="slider-fov" style={{ fontWeight: 500, color: "var(--text)" }}>
               Horizontal FOV
             </label>
@@ -437,12 +607,11 @@ export default function PhotoInspector({
             step="1"
             value={cameraParams.fov_deg}
             onChange={(e) => onUpdateCameraParams({ fov_deg: Number(e.target.value) })}
-            style={{ width: "100%" }}
           />
         </div>
 
         <div>
-          <div style={{ display: "flex", justifyContent: "space-between", fontSize: "13px", marginBottom: "4px" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", fontSize: "12px", marginBottom: "3px" }}>
             <label htmlFor="slider-depth" style={{ fontWeight: 500, color: "var(--text)" }}>
               Water depth
             </label>
@@ -458,111 +627,136 @@ export default function PhotoInspector({
             step="0.05"
             value={cameraParams.water_depth_m}
             onChange={(e) => onUpdateCameraParams({ water_depth_m: Number(e.target.value) })}
-            style={{ width: "100%" }}
           />
         </div>
       </div>
 
-      {/* Muse Spark 1.3 Hydrological Reasoning & Scale Reference Breakdown */}
+      {/* Visual Hydrological Gauge Telemetry */}
       <div
         style={{
           border: "1px solid var(--border)",
           borderRadius: "6px",
-          padding: "12px",
+          padding: "10px 12px",
           display: "flex",
           flexDirection: "column",
           gap: "8px",
+          backgroundColor: "var(--surface)",
         }}
       >
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
-          <span style={{ fontSize: "14px", fontWeight: 600, color: "var(--text)" }}>
-            Scale reference: {gauge.reference_object_detected || "Submerged Tricycle & Gate"}
-          </span>
-          <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
-            <span className="status-pill neutral num">
-              Std height {(gauge.reference_standard_height_m ?? 1.65).toFixed(2)} m
+          <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+            <span style={{ fontSize: "13px", fontWeight: 600, color: "var(--text)" }}>
+              Scale reference:
             </span>
-            <span className="status-pill warning num">
-              Submerged {Math.round((gauge.submerged_ratio ?? 0.82) * 100)}%
-            </span>
-            <span className="status-pill positive num">
-              Confidence {Math.round((gauge.confidence_score ?? 0.91) * 100)}%
+            <span style={{ fontSize: "13px", color: "var(--muted)" }}>
+              {photoUrl ? (gauge.reference_object_detected || "Submerged reference structure") : "Awaiting photo input"}
             </span>
           </div>
-        </div>
 
-        <p style={{ margin: 0, fontSize: "13px", color: "var(--muted)" }}>
-          {gauge.hydrological_reasoning}
-        </p>
-
-        {/* Section 9.3 Bonus Prize Feature: Muse Image / Wonder +1.5m Typhoon Surge Simulator */}
-        <div
-          style={{
-            display: "flex",
-            justifyContent: "space-between",
-            alignItems: "center",
-            gap: "12px",
-            paddingTop: "8px",
-            borderTop: "1px solid var(--rule)",
-            flexWrap: "wrap",
-          }}
-        >
-          <button
-            type="button"
-            className="btn-secondary"
-            onClick={onSimulateSurge}
-            disabled={surgeLoading}
-          >
-            <AlertTriangle size={14} />
-            {surgeLoading
-              ? "Computing +1.5m flood surge..."
-              : "Simulate +1.5m Flood Surge"}
-          </button>
-
-          {surgeResult && (
-            <div style={{ display: "flex", alignItems: "center", gap: "8px", flex: 1, minWidth: "180px" }}>
-              <label htmlFor="surge-compare" style={{ fontSize: "13px", color: "var(--muted)", whiteSpace: "nowrap" }}>
-                Current vs +1.5m surge
-              </label>
-              <input
-                id="surge-compare"
-                type="range"
-                min="0"
-                max="100"
-                value={compareSlider}
-                onChange={(e) => setCompareSlider(Number(e.target.value))}
-                style={{ flex: 1 }}
-              />
+          {photoUrl && (
+            <div style={{ display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
+              <span className="status-pill neutral num" style={{ fontSize: "11.5px" }}>
+                Std {(gauge.reference_standard_height_m ?? 1.65).toFixed(2)} m
+              </span>
+              <span className="status-pill warning num" style={{ fontSize: "11.5px" }}>
+                Submerged {Math.round((gauge.submerged_ratio ?? 0.82) * 100)}%
+              </span>
+              <span className="status-pill positive num" style={{ fontSize: "11.5px" }}>
+                {Math.round((gauge.confidence_score ?? 0.91) * 100)}% conf
+              </span>
             </div>
           )}
         </div>
 
-        {surgeResult && (
+        <p style={{ margin: 0, fontSize: "12.5px", color: "var(--muted)", lineHeight: 1.45 }}>
+          {photoUrl
+            ? (gauge.hydrological_reasoning || "Vision gauge detected reference structure waterline to calculate standing depth.")
+            : "SAM 3.1 segmentation and Muse Spark 1.3 visual depth gauge will analyze the street photo once loaded."}
+        </p>
+
+        {/* Typhoon Surge Simulation Control */}
+        {photoUrl && (
           <div
             style={{
-              backgroundColor: "var(--pill-warning-bg)",
-              border: "1px solid #fde68a",
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+              gap: "10px",
+              paddingTop: "8px",
+              borderTop: "1px solid var(--border)", /* taste-skill-ignore */
+              flexWrap: "wrap",
+            }}
+          >
+            <button
+              type="button"
+              className="btn-secondary"
+              onClick={() => {
+                if (!surgeResult) {
+                  onSimulateSurge();
+                }
+                setShowSurgeDrawer((prev) => !prev);
+              }}
+              disabled={surgeLoading}
+              style={{ fontSize: "12px", height: "30px" }}
+            >
+              <AlertTriangle size={13} color="var(--warning)" />
+              <span>
+                {surgeLoading
+                  ? "Simulating surge..."
+                  : surgeResult
+                  ? (showSurgeDrawer ? "Hide +1.5m forecast" : "View +1.5m surge forecast")
+                  : "Simulate +1.5m flood surge"}
+              </span>
+            </button>
+
+            {surgeResult && showSurgeDrawer && (
+              <div style={{ display: "flex", alignItems: "center", gap: "8px", flex: 1, minWidth: "160px" }}>
+                <label htmlFor="surge-compare" style={{ fontSize: "12px", color: "var(--muted)", whiteSpace: "nowrap" }}>
+                  Surge compare:
+                </label>
+                <input
+                  id="surge-compare"
+                  type="range"
+                  min="0"
+                  max="100"
+                  value={compareSlider}
+                  onChange={(e) => setCompareSlider(Number(e.target.value))}
+                  style={{ flex: 1 }}
+                />
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Surge Result Alert Box */}
+        {photoUrl && surgeResult && showSurgeDrawer && (
+          <div
+            style={{
+              backgroundColor: "var(--warning-soft)",
+              border: "1px solid var(--warning-border)",
               borderRadius: "6px",
               padding: "10px 12px",
               display: "flex",
               flexDirection: "column",
               gap: "6px",
+              marginTop: "4px",
             }}
           >
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
-              <strong style={{ fontSize: "13px", color: "var(--pill-warning-ink)" }}>
+              <strong style={{ fontSize: "12.5px", color: "var(--warning)" }}>
                 {surgeResult.alert_headline}
               </strong>
-              <button type="button" className="btn-secondary" onClick={handleCopyAlert}>
-                {copiedSms ? <Check size={13} /> : <Copy size={13} />}
-                {copiedSms ? "Copied SMS alert" : "Copy SMS evacuation card"}
+              <button
+                type="button"
+                className="btn-secondary"
+                onClick={handleCopyAlert}
+                style={{ fontSize: "11.5px", height: "26px", padding: "0 8px" }}
+              >
+                {copiedSms ? <Check size={12} /> : <Copy size={12} />}
+                <span>{copiedSms ? "Copied" : "Copy SMS alert"}</span>
               </button>
             </div>
-            <div style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "12px", color: "var(--pill-warning-ink)", opacity: 0.9 }}>
-              <span>Forecast method:</span>
-              <span className="mono-id" style={{ fontWeight: 600 }}>{surgeResult.model_used}</span>
-            </div>
-            <p style={{ margin: 0, fontSize: "13px", color: "var(--pill-warning-ink)" }}>
+            <p style={{ margin: 0, fontSize: "12px", color: "var(--warning)", lineHeight: 1.4 }}>
               {surgeResult.sms_broadcast_text}
             </p>
           </div>

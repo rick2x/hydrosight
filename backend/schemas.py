@@ -41,6 +41,11 @@ class AnalyzePhotoResponse(BaseModel):
     cached: bool = False
     fallback_used: bool = False
     execution_mode: str = 'live_inference'
+    is_custom_upload: bool = False
+
+
+class DeletePhotoRequest(BaseModel):
+    photo_url: Optional[str] = None
 
 
 class ProjectFloodRequest(BaseModel):

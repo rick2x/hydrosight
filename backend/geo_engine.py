@@ -174,7 +174,9 @@ def ensure_dem_exists(dem_path: Optional[str] = None) -> Path:
         return target_path
 
     target_path.parent.mkdir(parents=True, exist_ok=True)
-    repo_dem = ROOT_DIR / "dem" / "rodriguez_srtmgl1_10m_utm51n.tif"
+    repo_dem = ROOT_DIR / "dem" / "rodriguez_cop30_10m_utm51n.tif"
+    if not repo_dem.exists():
+        repo_dem = ROOT_DIR / "dem" / "rodriguez_srtmgl1_10m_utm51n.tif"
     if repo_dem.exists():
         shutil.copyfile(repo_dem, target_path)
         return target_path
@@ -710,9 +712,30 @@ def project_photo_to_flood_shapefile(
         target_x, target_y = _clamp_utm_to_dem(src, target_x, target_y, margin=search_radius_m + 20.0)
         ground_elev = _sample_dem_elevation(src, target_x, target_y)
         cam_ground_elev = _sample_dem_elevation(src, cam_x, cam_y)
-        # Camera operator is standing in the same flooded street basin; ensure WSE submerges both camera & target street grade
-        cam_street_elev = min(cam_ground_elev, ground_elev + max(0.15, water_depth_m * 0.35))
-        wse = ground_elev + water_depth_m
+
+        # Solution B: Ground-truth observer calibration & flooded street corridor reconciliation
+        # The camera operator is the ground-truth physical witness standing at (cam_x, cam_y).
+        # Standing water depth at the camera operator cannot exceed observed flood depth or human physical limits.
+        delta_z = ground_elev - cam_ground_elev
+        max_street_grade_m = max(0.40, est_distance_m * 0.025)
+
+        if abs(delta_z) > max_street_grade_m:
+            if delta_z > 0:
+                # Target DEM has an uphill artifact (e.g. tree/roof bounce or DEM step error).
+                # Anchor WSE to camera observer ground truth so camera depth matches the observed scene:
+                wse = cam_ground_elev + water_depth_m
+                cam_street_elev = cam_ground_elev
+                eff_target_z = min(ground_elev, wse - max(0.15, min(water_depth_m * 0.85, 0.45)))
+            else:
+                # Camera DEM is higher than target; anchor to target waterline and ensure camera is at water edge:
+                wse = ground_elev + water_depth_m
+                cam_street_elev = min(cam_ground_elev, wse - max(0.15, water_depth_m * 0.5))
+                eff_target_z = ground_elev
+        else:
+            # Elevations are consistent; anchor WSE to camera observer ground truth
+            wse = cam_ground_elev + water_depth_m
+            cam_street_elev = cam_ground_elev
+            eff_target_z = ground_elev
 
         # Sample real DEM elevation profile along the camera ray from 0m (Camera) to 1.6x target distance
         for frac in [0.0, 0.25, 0.50, 0.75, 1.0, 1.30, 1.60]:
@@ -720,9 +743,12 @@ def project_photo_to_flood_shapefile(
             px = cam_x + d_m * math.sin(target_bearing_rad)
             py = cam_y + d_m * math.cos(target_bearing_rad)
             raw_z = _sample_dem_elevation(src, px, py)
-            # Keep camera-to-target street channel physically below WSE when camera is in water
-            if frac <= 1.1:
-                eff_z = min(raw_z, ground_elev + (1.0 - min(1.0, frac)) * min(0.25, water_depth_m * 0.3))
+            if frac <= 1.0:
+                # Smooth street transition from camera observer to target
+                interp_street = cam_street_elev + frac * (eff_target_z - cam_street_elev)
+                eff_z = min(raw_z, interp_street)
+            elif frac <= 1.3:
+                eff_z = min(raw_z, eff_target_z + (frac - 1.0) * 0.35)
             else:
                 eff_z = raw_z
             profile_points.append(
@@ -961,7 +987,7 @@ def project_photo_to_flood_shapefile(
         "run_id": safe_run_id,
         "target_lat": round(target_lat, 6),
         "target_lon": round(target_lon, 6),
-        "ground_dem_m": round(ground_elev, 2),
+        "ground_dem_m": round(eff_target_z, 2),
         "cam_ground_dem_m": round(cam_street_elev, 2),
         "camera_in_water": True,
         "profile_points": profile_points,
@@ -1570,10 +1596,14 @@ def compute_safe_rescue_route(
 
         if len(path_nodes) >= 2:
             coords = [[n[0], n[1]] for n in path_nodes]
+            if coords[0] != [round(origin_lon, 6), round(origin_lat, 6)]:
+                coords.insert(0, [round(origin_lon, 6), round(origin_lat, 6)])
+            if coords[-1] != [round(dest_lon, 6), round(dest_lat, 6)]:
+                coords.append([round(dest_lon, 6), round(dest_lat, 6)])
             total_dist = 0.0
-            for i in range(1, len(path_nodes)):
-                u_pt = path_nodes[i - 1]
-                v_pt = path_nodes[i]
+            for i in range(1, len(coords)):
+                u_pt = coords[i - 1]
+                v_pt = coords[i]
                 total_dist += math.hypot((v_pt[0] - u_pt[0]) * 107600.0, (v_pt[1] - u_pt[1]) * 110600.0)
 
             total_dist = max(35.0, round(total_dist, 1))

@@ -36,6 +36,7 @@ from backend.meta_agents import (
 )
 from backend.schemas import (
     AnalyzePhotoResponse,
+    DeletePhotoRequest,
     ProjectFloodRequest,
     ProjectFloodResponse,
     ScenarioPreset,
@@ -139,6 +140,22 @@ async def analyze_photo(
         uploaded_image_path=uploaded_path,
         force_low_confidence_check=force_low_conf,
     )
+
+
+@app.post("/api/v1/delete-photo")
+def delete_photo(req: DeletePhotoRequest) -> dict:
+    deleted = False
+    if req.photo_url:
+        filename = Path(req.photo_url).name
+        if filename.startswith("upload_"):
+            target_path = PHOTOS_DIR / filename
+            if target_path.exists() and target_path.is_file():
+                try:
+                    target_path.unlink()
+                    deleted = True
+                except Exception:
+                    pass
+    return {"status": "ok", "deleted": deleted, "message": "Custom photo deleted"}
 
 
 @app.post("/api/v1/project-flood", response_model=ProjectFloodResponse)

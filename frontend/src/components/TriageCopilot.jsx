@@ -1,7 +1,7 @@
 import React, { useState } from "react";
-import { AlertTriangle, School, HeartPulse, Landmark } from "lucide-react";
+import { AlertTriangle, School, HeartPulse, Landmark, Check, Send } from "lucide-react";
 
-export default function TriageCopilot({ triageData, floodProjection }) {
+export default function TriageCopilot({ triageData, floodProjection, projectionLoading, triageLoading }) {
   const [dispatchedIds, setDispatchedIds] = useState({});
 
   const steps = triageData?.agent_steps || [];
@@ -29,11 +29,11 @@ export default function TriageCopilot({ triageData, floodProjection }) {
           }}
         >
           <div>
-            <h2 style={{ fontSize: "16px", fontWeight: 600, margin: 0, color: "var(--text)" }}>
+            <h2 style={{ fontSize: "15px", fontWeight: 600, margin: 0, color: "var(--text)" }}>
               Autonomous triage state machine (Muse Spark 1.3)
             </h2>
-            <p style={{ margin: "2px 0 0 0", fontSize: "13px", color: "var(--muted)" }}>
-              Deterministic 4-step perception, DEM projection, dynamic road graph rerouting & incident dispatch handoff
+            <p style={{ margin: "2px 0 0 0", fontSize: "12.5px", color: "var(--muted)" }}>
+              4-phase vision perception, DEM flood-fill, road graph routing & dispatch handoff
             </p>
           </div>
           <span className={`status-pill ${steps.length > 0 ? "positive" : "neutral"} num`}>
@@ -45,8 +45,8 @@ export default function TriageCopilot({ triageData, floodProjection }) {
           <table className="data-table">
             <thead>
               <tr>
-                <th style={{ width: "26%" }}>Phase & model</th>
-                <th style={{ width: "58%" }}>Autonomous decision & outcome</th>
+                <th style={{ width: "28%" }}>Phase & model</th>
+                <th style={{ width: "56%" }}>Autonomous decision & outcome</th>
                 <th className="num" style={{ width: "16%" }}>Latency</th>
               </tr>
             </thead>
@@ -54,26 +54,28 @@ export default function TriageCopilot({ triageData, floodProjection }) {
               {steps.length === 0 ? (
                 <tr>
                   <td colSpan="3" style={{ textAlign: "center", color: "var(--muted)", padding: "28px 12px" }}>
-                    Autonomous spatial state machine standby. Running live perception & DEM projection...
+                    {projectionLoading || triageLoading
+                      ? "Autonomous spatial state machine running perception & DEM projection..."
+                      : "Autonomous state machine standby. Click a point on photo or map to run triage."}
                   </td>
                 </tr>
               ) : (
                 steps.map((step) => (
                   <tr key={step.step_number}>
                     <td>
-                      <div style={{ fontWeight: 500, color: "var(--text)", fontSize: "13px" }}>
+                      <div style={{ fontWeight: 500, color: "var(--text)", fontSize: "12.5px" }}>
                         {step.phase}
                       </div>
-                      <div style={{ fontSize: "13px", color: "var(--muted)" }}>
+                      <div style={{ fontSize: "11.5px", color: "var(--muted)" }}>
                         {step.agent_model}
                       </div>
                     </td>
-                    <td style={{ fontSize: "13px", color: "var(--muted)" }}>
+                    <td style={{ fontSize: "12.5px", color: "var(--muted)", lineHeight: 1.4 }}>
                       {step.output_summary}
                     </td>
                     <td className="num">
-                      <span style={{ color: "var(--text)" }}>{step.latency_ms}</span>{" "}
-                      <span style={{ color: "var(--muted)" }}>ms</span>
+                      <span style={{ color: "var(--text)", fontWeight: 500 }}>{step.latency_ms}</span>{" "}
+                      <span style={{ color: "var(--muted)", fontSize: "11.5px" }}>ms</span>
                     </td>
                   </tr>
                 ))
@@ -83,8 +85,8 @@ export default function TriageCopilot({ triageData, floodProjection }) {
         </div>
       </section>
 
-      {/* Right Card: Priority Rescue Dispatch Tickets (Muse Glimmer Open Weights) */}
-      <section className="panel-card" aria-label="Muse Glimmer priority rescue dispatch tickets">
+      {/* Right Card: Priority Rescue Dispatch Tickets (Muse Spark Dispatcher) */}
+      <section className="panel-card" aria-label="Priority rescue dispatch tickets">
         <div
           style={{
             display: "flex",
@@ -95,10 +97,10 @@ export default function TriageCopilot({ triageData, floodProjection }) {
           }}
         >
           <div>
-            <h2 style={{ fontSize: "16px", fontWeight: 600, margin: 0, color: "var(--text)" }}>
+            <h2 style={{ fontSize: "15px", fontWeight: 600, margin: 0, color: "var(--text)" }}>
               Priority rescue dispatch queue (Muse Spark Dispatcher)
             </h2>
-            <p style={{ margin: "2px 0 0 0", fontSize: "13px", color: "var(--muted)" }}>
+            <p style={{ margin: "2px 0 0 0", fontSize: "12.5px", color: "var(--muted)" }}>
               {telemetry ? (
                 <>Provider: {telemetry.provider} · <span className="num">{telemetry.tokens_used} tokens</span> logged</>
               ) : (
@@ -115,9 +117,9 @@ export default function TriageCopilot({ triageData, floodProjection }) {
           <table className="data-table">
             <thead>
               <tr>
-                <th style={{ width: "42%" }}>Ticket & directive</th>
+                <th style={{ width: "44%" }}>Ticket & directive</th>
                 <th style={{ width: "16%" }}>Priority</th>
-                <th className="num" style={{ width: "16%" }}>Depth</th>
+                <th className="num" style={{ width: "14%" }}>Depth</th>
                 <th className="num" style={{ width: "12%" }}>ETA</th>
                 <th style={{ width: "14%" }}>Action</th>
               </tr>
@@ -126,7 +128,9 @@ export default function TriageCopilot({ triageData, floodProjection }) {
               {tickets.length === 0 ? (
                 <tr>
                   <td colSpan="5" style={{ textAlign: "center", color: "var(--muted)", padding: "28px 12px" }}>
-                    No dispatch tickets queued. Evaluating inundated footprints from spatial join...
+                    {projectionLoading || triageLoading
+                      ? "Evaluating inundated footprints from spatial join and queuing dispatch tickets..."
+                      : "No dispatch tickets queued. Click a point on photo or map to run DEM flood projection."}
                   </td>
                 </tr>
               ) : (
@@ -135,32 +139,31 @@ export default function TriageCopilot({ triageData, floodProjection }) {
                   return (
                     <tr key={t.ticket_id}>
                       <td>
-                        <div className="mono-id" style={{ fontWeight: 500, color: "var(--text)", fontSize: "13px", display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
-                          <span>{t.ticket_id} · {t.building_name || `${(t.building_type || "building").replace(/^\w/, (c) => c.toUpperCase())} ${t.building_id}`}</span>
+                        <div style={{ fontWeight: 500, color: "var(--text)", fontSize: "12.5px", display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
+                          <span className="mono-id">{t.ticket_id}</span>
+                          <span>· {t.building_name || `${(t.building_type || "building").replace(/^\w/, (c) => c.toUpperCase())} ${t.building_id}`}</span>
                           {t.is_evac_center && (
-                            <span className="status-pill critical" style={{ fontSize: "11px", padding: "1px 6px" }}>
-                              <AlertTriangle size={11} /> <span>EVAC CENTER</span>
+                            <span className="status-pill critical" style={{ fontSize: "10.5px", padding: "1px 5px", height: "18px" }}>
+                              <AlertTriangle size={10} /> <span>EVAC CENTER</span>
                             </span>
                           )}
                           {t.infra_category === "education" && (
-                            <span className="status-pill warning" style={{ fontSize: "11px", padding: "1px 6px" }}>
-                              <School size={11} /> <span>School</span>
+                            <span className="status-pill warning" style={{ fontSize: "10.5px", padding: "1px 5px", height: "18px" }}>
+                              <School size={10} /> <span>School</span>
                             </span>
                           )}
                           {t.infra_category === "healthcare" && (
-                            <span className="status-pill critical" style={{ fontSize: "11px", padding: "1px 6px" }}>
-                              <HeartPulse size={11} /> <span>Clinic</span>
+                            <span className="status-pill critical" style={{ fontSize: "10.5px", padding: "1px 5px", height: "18px" }}>
+                              <HeartPulse size={10} /> <span>Clinic</span>
                             </span>
                           )}
                           {t.infra_category === "emergency_civic" && !t.is_evac_center && (
-                            <span className="status-pill neutral" style={{ fontSize: "11px", padding: "1px 6px" }}>
-                              <Landmark size={11} /> <span>Civic</span>
+                            <span className="status-pill neutral" style={{ fontSize: "10.5px", padding: "1px 5px", height: "18px" }}>
+                              <Landmark size={10} /> <span>Civic</span>
                             </span>
                           )}
-                          {t.footprint_sqm ? <span style={{ color: "var(--muted)" }}>· {Math.round(t.footprint_sqm)} m²</span> : ""}
-                          <span style={{ color: "var(--muted)" }}>· occupants: {t.stranded_residents_est ?? "unknown"}</span>
                         </div>
-                        <div style={{ fontSize: "13px", color: "var(--muted)" }}>
+                        <div style={{ fontSize: "12px", color: "var(--muted)", marginTop: "2px" }}>
                           {t.tactical_directive}
                         </div>
                       </td>
@@ -169,6 +172,7 @@ export default function TriageCopilot({ triageData, floodProjection }) {
                           className={`status-pill ${
                             t.priority === "CRITICAL" ? "critical" : "warning"
                           }`}
+                          style={{ fontSize: "11px" }}
                         >
                           {t.priority}
                         </span>
@@ -177,13 +181,13 @@ export default function TriageCopilot({ triageData, floodProjection }) {
                         <span style={{ fontWeight: 500, color: "var(--text)" }}>
                           {t.flood_depth_m.toFixed(2)}
                         </span>{" "}
-                        <span style={{ color: "var(--muted)" }}>m</span>
+                        <span style={{ color: "var(--muted)", fontSize: "11.5px" }}>m</span>
                       </td>
                       <td className="num">
                         <span style={{ fontWeight: 500, color: "var(--text)" }}>
                           {t.eta_minutes}
                         </span>{" "}
-                        <span style={{ color: "var(--muted)" }}>min</span>
+                        <span style={{ color: "var(--muted)", fontSize: "11.5px" }}>min</span>
                       </td>
                       <td>
                         <button
@@ -191,13 +195,18 @@ export default function TriageCopilot({ triageData, floodProjection }) {
                           className={isSent ? "btn-secondary" : "btn-primary"}
                           onClick={() => handleDispatchToggle(t.ticket_id)}
                           style={{
-                            fontSize: "12px",
-                            padding: "4px 10px",
-                            minHeight: "28px",
+                            fontSize: "11.5px",
+                            padding: "0 8px",
+                            height: "28px",
                             width: "100%",
+                            justifyContent: "center",
+                            backgroundColor: isSent ? "var(--positive-soft)" : undefined,
+                            borderColor: isSent ? "var(--positive-border)" : undefined,
+                            color: isSent ? "var(--positive)" : undefined,
                           }}
                         >
-                          {isSent ? "Dispatched" : "Dispatch"}
+                          {isSent ? <Check size={12} /> : <Send size={11} />}
+                          <span>{isSent ? "Dispatched" : "Dispatch"}</span>
                         </button>
                       </td>
                     </tr>
