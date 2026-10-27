@@ -64,7 +64,9 @@ class InundatedStructureSummary(BaseModel):
     low_area_sqm: float = Field(0.0, description="DEM flood zone area (< 0.5m) in sq meters")
     medium_area_sqm: float = Field(0.0, description="DEM flood zone area (0.5m - 1.5m) in sq meters")
     critical_area_sqm: float = Field(0.0, description="DEM flood zone area (> 1.5m) in sq meters")
-    estimated_affected_residents: int
+    affected_structures: int = Field(0, description="OSM footprints inside any DEM flood zone")
+    affected_footprint_sqm: float = Field(0.0, description="Total roof footprint area of affected structures")
+    building_source: str = Field("OSM Buildings.shp", description="Building footprint dataset used")
 
 
 class ProjectFloodResponse(BaseModel):
@@ -116,9 +118,14 @@ class DispatchTicket(BaseModel):
     barangay: str
     cluster_name: str
     building_id: str
+    building_name: Optional[str] = None
+    building_type: Optional[str] = None
+    footprint_sqm: Optional[float] = None
     flood_depth_m: float
     wse_m: float
-    stranded_residents_est: int
+    stranded_residents_est: Optional[int] = Field(
+        None, description="Unknown until a population/occupancy dataset is linked; never synthesized"
+    )
     assigned_unit: str
     vehicle_type: str
     evacuation_center: str

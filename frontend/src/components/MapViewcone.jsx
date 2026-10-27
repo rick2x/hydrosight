@@ -35,6 +35,7 @@ export default function MapViewcone({
   floodProjection,
   triageData,
   boundaryGeojson,
+  evacCentersGeojson,
   onUpdateCameraCoords,
 }) {
   const mapContainerRef = useRef(null);
@@ -265,6 +266,22 @@ export default function MapViewcone({
           },
         });
 
+        map.addSource("evacuation-centers", {
+          type: "geojson",
+          data: evacCentersGeojson || { type: "FeatureCollection", features: [] },
+        });
+        map.addLayer({
+          id: "evacuation-centers-circle",
+          type: "circle",
+          source: "evacuation-centers",
+          paint: {
+            "circle-radius": 6.5,
+            "circle-color": "#1e7b4f",
+            "circle-stroke-color": "#ffffff",
+            "circle-stroke-width": 2,
+          },
+        });
+
         setMapReady(true);
       });
 
@@ -316,6 +333,9 @@ export default function MapViewcone({
     if (boundaryGeojson) {
       map.getSource("rodriguez-boundary")?.setData(boundaryGeojson);
     }
+    if (evacCentersGeojson) {
+      map.getSource("evacuation-centers")?.setData(evacCentersGeojson);
+    }
   }, [
     mapReady,
     viewconeGeojson,
@@ -323,6 +343,7 @@ export default function MapViewcone({
     floodProjection,
     triageData,
     boundaryGeojson,
+    evacCentersGeojson,
     cameraParams.cam_lon,
     cameraParams.cam_lat,
   ]);

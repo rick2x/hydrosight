@@ -998,51 +998,59 @@ def generate_dispatch_tickets_with_muse_glimmer(
     eta_minutes: float,
     critical_buildings: List[Dict[str, Any]],
 ) -> Tuple[List[DispatchTicket], OpenWeightTelemetry]:
+    """
+    Formats priority rescue tickets for the deepest real OSM footprints (Buildings.shp).
+    Occupant counts are intentionally NOT produced: no population/occupancy layer is
+    linked, so stranded_residents_est stays None and directives call for a door-to-door
+    headcount instead of inventing a number.
+    """
     t0 = time.perf_counter()
-    prefix = "".join(c for c in barangay[:3].upper() if c.isalpha()) or "MNT"
     bldg_summary = [
         {
-            "building_id": b.get("building_id", f"{prefix}-BLK-001"),
-            "flood_depth_m": b.get("flood_depth_m", water_depth_m),
-            "est_residents": b.get("est_residents", 8),
-            "floors": b.get("floors", 1),
+            "building_id": str(b.get("building_id", "OSM-unknown")),
+            "building_name": (b.get("building_name") or "").strip() or None,
+            "building_type": (b.get("building_type") or "building"),
+            "footprint_sqm": round(float(b.get("footprint_sqm") or 0.0), 1),
+            "flood_depth_m": round(float(b.get("flood_depth_m", water_depth_m)), 2),
         }
         for b in critical_buildings[:3]
     ]
+
+    tokens_used = 0
+    tickets: List[DispatchTicket] = []
     if not bldg_summary:
-        bldg_summary = [
-            {"building_id": f"{prefix}-BLK-014", "flood_depth_m": round(water_depth_m, 2), "est_residents": 11, "floors": 1},
-            {"building_id": f"{prefix}-BLK-029", "flood_depth_m": round(water_depth_m * 0.85, 2), "est_residents": 7, "floors": 2},
-            {"building_id": f"{prefix}-BLK-042", "flood_depth_m": round(water_depth_m * 0.72, 2), "est_residents": 6, "floors": 1},
-        ]
+        telemetry = log_open_weight_inference(
+            model_id="muse-glimmer (Open Weights)",
+            provider=f"{OPEN_WEIGHT_PROVIDER} [skipped: no affected footprints]",
+            latency_ms=max(1, int((time.perf_counter() - t0) * 1000)),
+            tokens=0,
+        )
+        return tickets, telemetry
 
     cache_payload = {
-        "endpoint": "muse-glimmer/dispatch-tickets",
+        "endpoint": "muse-glimmer/dispatch-tickets-v2",
         "barangay": barangay,
         "wse_m": round(wse_m, 2),
-        "water_depth_m": round(water_depth_m, 2),
         "vehicle_type": vehicle_type,
+        "evacuation_center": evacuation_center,
         "buildings": bldg_summary,
     }
     cached = _read_cache(cache_payload)
-    tokens_used = 485
-
     if cached is not None:
-        latency_ms = max(42, int((time.perf_counter() - t0) * 1000))
         telemetry = log_open_weight_inference(
             model_id="muse-glimmer (Open Weights)",
             provider=f"{OPEN_WEIGHT_PROVIDER} [SHA256 Cache Hit]",
-            latency_ms=latency_ms,
-            tokens=cached.get("tokens_used", tokens_used),
+            latency_ms=max(1, int((time.perf_counter() - t0) * 1000)),
+            tokens=cached.get("tokens_used", 0),
         )
         return [DispatchTicket(**t) for t in cached["tickets"]], telemetry
 
     prompt = (
-        "You are Muse Glimmer (Meta Open-Weight Low-Latency Incident Formatter) for Rodriguez MDRRMO. "
-        "Return a JSON object with key 'tickets' containing 3 priority flood rescue dispatch tickets. "
-        "Each ticket must have: ticket_id, priority (CRITICAL or HIGH), barangay, cluster_name, "
-        "building_id, flood_depth_m, wse_m, stranded_residents_est, assigned_unit, vehicle_type, "
-        "evacuation_center, eta_minutes (int), tactical_directive, generated_by_model."
+        "You are Muse Glimmer, a low-latency incident formatter for Rodriguez MDRRMO. "
+        "Return JSON {\"tickets\": [...]} with one entry per target building, in the same order. "
+        "Each entry: cluster_name (short sector label), tactical_directive (one sentence). "
+        "Do NOT state or estimate the number of occupants/residents; occupancy is unknown. "
+        "Instead instruct the team to conduct a headcount on arrival."
     )
     user_input = json.dumps(
         {
@@ -1055,7 +1063,7 @@ def generate_dispatch_tickets_with_muse_glimmer(
         }
     )
 
-    tickets: List[DispatchTicket] = []
+    llm_items: List[Dict[str, Any]] = []
     try:
         with httpx.Client(timeout=16.0) as client:
             resp = client.post(
@@ -1076,67 +1084,44 @@ def generate_dispatch_tickets_with_muse_glimmer(
             )
             if resp.status_code == 200:
                 body = resp.json()
-                tokens_used = int(body.get("usage", {}).get("total_tokens", 510))
-                raw_content = json.loads(body["choices"][0]["message"]["content"])
-                for idx, item in enumerate(raw_content.get("tickets", [])[:3]):
-                    ref_bldg = bldg_summary[min(idx, len(bldg_summary) - 1)]
-                    tickets.append(
-                        DispatchTicket(
-                            ticket_id=f"MDRRMO-2026-{104 + idx}",
-                            priority="CRITICAL" if float(ref_bldg["flood_depth_m"]) >= 1.2 else "HIGH",
-                            barangay=barangay,
-                            cluster_name=str(item.get("cluster_name", f"{barangay.title()} Lowland Sector {idx + 1}")),
-                            building_id=str(ref_bldg["building_id"]),
-                            flood_depth_m=round(float(ref_bldg["flood_depth_m"]), 2),
-                            wse_m=round(wse_m, 2),
-                            stranded_residents_est=int(ref_bldg["est_residents"]),
-                            assigned_unit=f"RODRIGUEZ-SAR-0{idx + 1}",
-                            vehicle_type=vehicle_type,
-                            evacuation_center=evacuation_center,
-                            eta_minutes=max(5, int(round(eta_minutes)) + idx * 2),
-                            tactical_directive=(
-                                f"Approach via elevated bypass; flood depth {float(ref_bldg['flood_depth_m']):.2f}m "
-                                f"at {ref_bldg['building_id']}. Extract {ref_bldg['est_residents']} residents to {evacuation_center}."
-                            ),
-                            generated_by_model="muse-glimmer (Open Weights)",
-                        )
-                    )
+                tokens_used = int(body.get("usage", {}).get("total_tokens", 0))
+                llm_items = json.loads(body["choices"][0]["message"]["content"]).get("tickets", []) or []
     except Exception:
-        pass
+        llm_items = []
 
-    if not tickets:
-        for idx, b in enumerate(bldg_summary):
-            depth_val = float(b["flood_depth_m"])
-            tickets.append(
-                DispatchTicket(
-                    ticket_id=f"MDRRMO-2026-{104 + idx}",
-                    priority="CRITICAL" if depth_val >= 1.2 else "HIGH",
-                    barangay=barangay,
-                    cluster_name=f"Brgy. {barangay.title()} Floodplain Block {idx + 1}",
-                    building_id=str(b["building_id"]),
-                    flood_depth_m=round(depth_val, 2),
-                    wse_m=round(wse_m, 2),
-                    stranded_residents_est=int(b["est_residents"]),
-                    assigned_unit=f"RODRIGUEZ-SAR-0{idx + 1}",
-                    vehicle_type=vehicle_type,
-                    evacuation_center=evacuation_center,
-                    eta_minutes=max(4, int(round(eta_minutes)) + idx * 2),
-                    tactical_directive=(
-                        f"Approach via elevated bypass; water depth {depth_val:.2f}m exceeds wheeled clearance. "
-                        f"Extract {b['est_residents']} residents from {b['building_id']} to {evacuation_center}."
-                    ),
-                    generated_by_model="muse-glimmer (Open Weights)",
-                )
+    for idx, b in enumerate(bldg_summary):
+        depth_val = float(b["flood_depth_m"])
+        label = b["building_name"] or f"{str(b['building_type']).title()} {b['building_id']}"
+        default_directive = (
+            f"Flood depth {depth_val:.2f} m at {label} ({b['footprint_sqm']:.0f} m\u00b2 footprint). "
+            f"Occupancy unknown \u2014 conduct headcount on arrival and evacuate to {evacuation_center}."
+        )
+        item = llm_items[idx] if idx < len(llm_items) and isinstance(llm_items[idx], dict) else {}
+        directive = str(item.get("tactical_directive") or default_directive)
+        tickets.append(
+            DispatchTicket(
+                ticket_id=f"MDRRMO-2026-{104 + idx}",
+                priority="CRITICAL" if depth_val > 1.5 else ("HIGH" if depth_val >= 0.5 else "MEDIUM"),
+                barangay=barangay,
+                cluster_name=str(item.get("cluster_name") or f"Brgy. {barangay.title()} Flood Zone {idx + 1}"),
+                building_id=b["building_id"],
+                building_name=b["building_name"],
+                building_type=b["building_type"],
+                footprint_sqm=b["footprint_sqm"],
+                flood_depth_m=round(depth_val, 2),
+                wse_m=round(wse_m, 2),
+                stranded_residents_est=None,
+                assigned_unit=f"RODRIGUEZ-SAR-0{idx + 1}",
+                vehicle_type=vehicle_type,
+                evacuation_center=evacuation_center,
+                eta_minutes=max(1, int(round(eta_minutes)) + idx * 2),
+                tactical_directive=directive,
+                generated_by_model="muse-glimmer (Open Weights)" if item else "rule-based formatter",
             )
+        )
 
-    latency_ms = max(115, int((time.perf_counter() - t0) * 1000))
-    _write_cache(
-        cache_payload,
-        {
-            "tickets": [t.model_dump() for t in tickets],
-            "tokens_used": tokens_used,
-        },
-    )
+    latency_ms = max(1, int((time.perf_counter() - t0) * 1000))
+    _write_cache(cache_payload, {"tickets": [t.model_dump() for t in tickets], "tokens_used": tokens_used})
     telemetry = log_open_weight_inference(
         model_id="muse-glimmer (Open Weights)",
         provider=OPEN_WEIGHT_PROVIDER,
@@ -1151,16 +1136,10 @@ def run_autonomous_triage_agent(req: TriageRouteRequest) -> TriageRouteResponse:
     loc_meta = resolve_location_metadata(req.target_lat, req.target_lon, fallback_barangay=req.barangay)
     resolved_barangay = loc_meta["barangay"]
 
-    if req.scenario_id in SCENARIO_PRESETS and math.hypot(
-        preset.cam_lat - req.cam_lat, preset.cam_lon - req.cam_lon
-    ) < 0.008:
-        evac_name = preset.evacuation_center_name
-        evac_lat = preset.evacuation_center_lat
-        evac_lon = preset.evacuation_center_lon
-    else:
-        evac_name = loc_meta["evac_name"]
-        evac_lat = loc_meta["evac_lat"]
-        evac_lon = loc_meta["evac_lon"]
+    # Always use the nearest real evacuation center from backend/data/evacuationcenters.csv
+    evac_name = loc_meta["evac_name"]
+    evac_lat = loc_meta["evac_lat"]
+    evac_lon = loc_meta["evac_lon"]
 
     agent_steps: List[AgentStepLog] = []
 
@@ -1204,7 +1183,8 @@ def run_autonomous_triage_agent(req: TriageRouteRequest) -> TriageRouteResponse:
             output_summary=(
                 f"Spatial join across {summary.total_structures} footprints in Brgy. {resolved_barangay}: "
                 f"{summary.critical_depth_count} critical (>1.5m), {summary.medium_depth_count} medium (0.5-1.5m), "
-                f"{summary.low_depth_count} low (<0.5m); ~{summary.estimated_affected_residents} residents affected."
+                f"{summary.low_depth_count} low (<0.5m); {summary.affected_structures} affected OSM footprints "
+                f"({summary.affected_footprint_sqm:,.0f} m\u00b2 roof area). Occupancy unknown (no population layer)."
             ),
             latency_ms=max(95, int((time.perf_counter() - t2) * 1000) + 90),
         )

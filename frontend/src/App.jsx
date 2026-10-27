@@ -245,6 +245,7 @@ export default function App() {
   });
   const [triageData, setTriageData] = useState(INITIAL_TRIAGE);
   const [boundaryGeojson, setBoundaryGeojson] = useState(null);
+  const [evacCentersGeojson, setEvacCentersGeojson] = useState(null);
   const [triageLoading, setTriageLoading] = useState(false);
   const [surgeResult, setSurgeResult] = useState(null);
   const [surgeLoading, setSurgeLoading] = useState(false);
@@ -336,13 +337,14 @@ export default function App() {
     []
   );
 
-  // Load initial scenarios, political boundaries, and run initial projection
+  // Load initial scenarios, political boundaries, evacuation centers, and run initial projection
   useEffect(() => {
     async function init() {
       try {
-        const [scenRes, bndRes] = await Promise.all([
+        const [scenRes, bndRes, ecRes] = await Promise.all([
           fetch("/api/v1/scenarios"),
           fetch("/api/v1/boundary"),
+          fetch("/api/v1/evacuation-centers"),
         ]);
         if (scenRes.ok) {
           const scenList = await scenRes.json();
@@ -352,6 +354,9 @@ export default function App() {
         }
         if (bndRes.ok) {
           setBoundaryGeojson(await bndRes.json());
+        }
+        if (ecRes.ok) {
+          setEvacCentersGeojson(await ecRes.json());
         }
       } catch {
         // Fallback to pre-hydrated state
@@ -405,8 +410,8 @@ export default function App() {
       clearTimeout(sliderTimerRef.current);
     }
     sliderTimerRef.current = setTimeout(() => {
-      runProjectionAndTriage(updated, activeScenarioId, false);
-    }, 120);
+      runProjectionAndTriage(updated, activeScenarioId, true);
+    }, 160);
   };
 
   const handlePhotoClickTarget = (u, v) => {
@@ -758,6 +763,7 @@ export default function App() {
               floodProjection={floodProjection}
               triageData={triageData}
               boundaryGeojson={boundaryGeojson}
+              evacCentersGeojson={evacCentersGeojson}
               onUpdateCameraCoords={handleUpdateCameraCoords}
             />
           </div>

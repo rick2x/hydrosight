@@ -123,7 +123,9 @@ export default function TriageCopilot({ triageData }) {
                   <tr key={t.ticket_id}>
                     <td>
                       <div className="mono-id" style={{ fontWeight: 500, color: "var(--text)", fontSize: "13px" }}>
-                        {t.ticket_id} · {t.building_id} ({t.stranded_residents_est} pax)
+                        {t.ticket_id} · {t.building_name || `${(t.building_type || "building").replace(/^\w/, (c) => c.toUpperCase())} ${t.building_id}`}
+                        {t.footprint_sqm ? ` · ${Math.round(t.footprint_sqm)} m²` : ""}
+                        {` · occupants: ${t.stranded_residents_est ?? "unknown"}`}
                       </div>
                       <div style={{ fontSize: "13px", color: "var(--muted)" }}>
                         {t.tactical_directive}

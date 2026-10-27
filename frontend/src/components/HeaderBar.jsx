@@ -14,10 +14,10 @@ export default function HeaderBar({
   const activeScenario =
     scenarios.find((s) => s.id === activeScenarioId) || scenarios[0] || {};
   const summary = floodProjection?.inundated_structures || {
-    critical_depth_count: 216,
-    medium_depth_count: 53,
-    low_depth_count: 39,
-    estimated_affected_residents: 2189,
+    critical_depth_count: 0,
+    medium_depth_count: 0,
+    low_depth_count: 0,
+    affected_structures: 0,
   };
   const wse = floodProjection?.water_surface_elev_m ?? 35.89;
   const depth = floodProjection?.measured_depth_m ?? activeScenario.water_depth_m ?? 1.35;
@@ -25,7 +25,7 @@ export default function HeaderBar({
 
   const findingText = triageData
     ? `Water surface elevation at ${wse.toFixed(2)} m MSL submerges ${summary.critical_depth_count} structures above 1.5 m in Brgy. ${activeScenario.barangay || "SAN JOSE"}; ${triageData.severed_segments_count} road segments severed at 0.5 m — ${triageData.vehicle_selected.replace(/_/g, " ")} corridor (${Math.round(triageData.route_distance_m)} m, ${triageData.eta_minutes.toFixed(1)} min ETA) active.`
-    : `Water surface elevation at ${wse.toFixed(2)} m MSL submerges ${summary.critical_depth_count} structures above 1.5 m in Brgy. ${activeScenario.barangay || "SAN JOSE"} (~${summary.estimated_affected_residents.toLocaleString()} residents affected).`;
+    : `Water surface elevation at ${wse.toFixed(2)} m MSL submerges ${summary.critical_depth_count} structures above 1.5 m in Brgy. ${activeScenario.barangay || "SAN JOSE"} (${(summary.affected_structures ?? 0).toLocaleString()} OSM footprints in flood zones).`;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "12px", minWidth: 0 }}>

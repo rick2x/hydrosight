@@ -17,6 +17,7 @@ from backend.geo_engine import (
     ensure_dem_exists,
     ensure_spatial_assets,
     get_barangay_boundaries_geojson,
+    get_evacuation_centers_geojson,
     project_photo_to_flood_shapefile,
     resolve_location_metadata,
 )
@@ -96,6 +97,11 @@ def list_scenarios() -> List[ScenarioPreset]:
 @app.get("/api/v1/boundary")
 def get_boundary() -> dict:
     return get_barangay_boundaries_geojson()
+
+
+@app.get("/api/v1/evacuation-centers")
+def get_evacuation_centers() -> dict:
+    return get_evacuation_centers_geojson()
 
 
 @app.post("/api/v1/analyze-photo", response_model=AnalyzePhotoResponse)

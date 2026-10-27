@@ -28,6 +28,7 @@ ROOT_DIR = BASE_DIR.parent
 DEFAULT_DEM_PATH = DATA_DIR / "rodriguez_dem.tif"
 BUILDINGS_PARQUET_PATH = DATA_DIR / "rodriguez_buildings.parquet"
 ROADS_GRAPHML_PATH = DATA_DIR / "rodriguez_roads.graphml"
+EVAC_CENTERS_CSV_PATH = DATA_DIR / "evacuationcenters.csv"
 BOUNDARY_SHP_PATH = ROOT_DIR / "boundary" / "political_boundary_rodriguez.shp"
 
 to_utm = Transformer.from_crs("EPSG:4326", "EPSG:32651", always_xy=True)
@@ -35,6 +36,7 @@ to_wgs84 = Transformer.from_crs("EPSG:32651", "EPSG:4326", always_xy=True)
 
 _EXPORT_LOCK = threading.Lock()
 _BOUNDARY_GDF_WGS84: Optional[gpd.GeoDataFrame] = None
+_EVAC_CENTERS_CACHE: Optional[List[Dict[str, Any]]] = None
 
 # All 11 Barangays + key flood sectors across the entire Municipality of Rodriguez (Montalban), Rizal
 SCENARIO_ZONES = [
@@ -325,10 +327,123 @@ def _sample_dem_elevation(src: rasterio.DatasetReader, x: float, y: float) -> fl
     return val
 
 
+def load_evacuation_centers() -> List[Dict[str, Any]]:
+    """
+    Loads all 61 real evacuation centers across Rodriguez (Montalban) from
+    backend/data/evacuationcenters.csv (columns: x=lon, y=lat, ec=name).
+    """
+    global _EVAC_CENTERS_CACHE
+    if _EVAC_CENTERS_CACHE is not None:
+        return _EVAC_CENTERS_CACHE
+
+    centers: List[Dict[str, Any]] = []
+    if EVAC_CENTERS_CSV_PATH.exists():
+        try:
+            df = pd.read_csv(EVAC_CENTERS_CSV_PATH)
+            for idx, row in df.iterrows():
+                lon = float(row["x"])
+                lat = float(row["y"])
+                name = str(row["ec"]).strip()
+                ux, uy = to_utm.transform(lon, lat)
+                centers.append(
+                    {
+                        "id": f"ec_{idx + 1}",
+                        "name": name,
+                        "lon": round(lon, 6),
+                        "lat": round(lat, 6),
+                        "utm_x": round(ux, 2),
+                        "utm_y": round(uy, 2),
+                    }
+                )
+        except Exception:
+            centers = []
+
+    if not centers:
+        for idx, z in enumerate(SCENARIO_ZONES):
+            ux, uy = to_utm.transform(z["evac_lon"], z["evac_lat"])
+            centers.append(
+                {
+                    "id": f"ec_fallback_{idx + 1}",
+                    "name": z["evac_name"],
+                    "lon": z["evac_lon"],
+                    "lat": z["evac_lat"],
+                    "utm_x": round(ux, 2),
+                    "utm_y": round(uy, 2),
+                }
+            )
+
+    _EVAC_CENTERS_CACHE = centers
+    return centers
+
+
+def find_nearest_evacuation_center(lat: float, lon: float, min_safe_dist_m: float = 55.0) -> Dict[str, Any]:
+    """
+    Finds the evacuation center from backend/data/evacuationcenters.csv with the
+    shortest actual road network distance along backend/data/rodriguez_roads.shp.
+    """
+    centers = load_evacuation_centers()
+    tx, ty = to_utm.transform(lon, lat)
+
+    euclid_ranked = []
+    for ec in centers:
+        dist_m = math.hypot(ec["utm_x"] - tx, ec["utm_y"] - ty)
+        euclid_ranked.append((dist_m, ec))
+
+    euclid_ranked.sort(key=lambda item: item[0])
+    candidates = [item for item in euclid_ranked if item[0] >= min_safe_dist_m][:6] or euclid_ranked[:3]
+
+    G_shp, node_list, node_arr = _get_road_shapefile_graph()
+    if G_shp is not None and node_arr is not None and len(node_list) > 0:
+        dest_node = _snap_to_road_node(lon, lat, node_list, node_arr)
+        max_euclid = max(c[0] for c in candidates)
+        lengths_map = nx.single_source_dijkstra_path_length(
+            G_shp, dest_node, cutoff=max(1800.0, max_euclid * 2.4), weight="length"
+        )
+        best_road_dist = float("inf")
+        best_ec = candidates[0][1]
+        best_euclid = candidates[0][0]
+        for euclid_d, ec in candidates:
+            orig_node = _snap_to_road_node(ec["lon"], ec["lat"], node_list, node_arr)
+            road_d = float(lengths_map.get(orig_node, euclid_d * 1.45))
+            if road_d < best_road_dist:
+                best_road_dist = road_d
+                best_ec = ec
+                best_euclid = euclid_d
+        return {**best_ec, "straight_dist_m": round(best_euclid, 1), "road_dist_m": round(best_road_dist, 1)}
+
+    best_dist, best_ec = candidates[0]
+    return {**best_ec, "straight_dist_m": round(best_dist, 1), "road_dist_m": round(best_dist * 1.2, 1)}
+
+
+def get_evacuation_centers_geojson() -> Dict[str, Any]:
+    """Returns all 61 real evacuation centers from evacuationcenters.csv as a GeoJSON FeatureCollection."""
+    centers = load_evacuation_centers()
+    return {
+        "type": "FeatureCollection",
+        "features": [
+            {
+                "type": "Feature",
+                "properties": {
+                    "id": ec["id"],
+                    "name": ec["name"],
+                    "lon": ec["lon"],
+                    "lat": ec["lat"],
+                },
+                "geometry": {
+                    "type": "Point",
+                    "coordinates": [ec["lon"], ec["lat"]],
+                },
+            }
+            for ec in centers
+        ],
+    }
+
+
 def resolve_location_metadata(lat: float, lon: float, fallback_barangay: str = "SAN JOSE") -> Dict[str, Any]:
     """
     Given any (lat, lon) in Rodriguez (Montalban), resolves the containing or nearest
-    Barangay from political_boundary_rodriguez.shp and nearest evacuation center.
+    Barangay from political_boundary_rodriguez.shp and the nearest real evacuation center
+    from backend/data/evacuationcenters.csv.
     """
     global _BOUNDARY_GDF_WGS84
     barangay_name = fallback_barangay.upper()
@@ -347,7 +462,6 @@ def resolve_location_metadata(lat: float, lon: float, fallback_barangay: str = "
             b_col = "Barangay" if "Barangay" in _BOUNDARY_GDF_WGS84.columns else "BRGYNAME"
             barangay_name = str(_BOUNDARY_GDF_WGS84.loc[nearest_idx, b_col]).upper()
 
-    # Find closest scenario zone / evacuation center
     best_zone = SCENARIO_ZONES[0]
     best_dist = float("inf")
     for z in SCENARIO_ZONES:
@@ -362,12 +476,15 @@ def resolve_location_metadata(lat: float, lon: float, fallback_barangay: str = "
                 best_dist = d
                 best_zone = z
 
+    nearest_ec = find_nearest_evacuation_center(lat, lon)
+
     return {
         "barangay": barangay_name,
         "nearest_zone": best_zone,
-        "evac_name": best_zone["evac_name"],
-        "evac_lat": best_zone["evac_lat"],
-        "evac_lon": best_zone["evac_lon"],
+        "evac_name": nearest_ec["name"],
+        "evac_lat": nearest_ec["lat"],
+        "evac_lon": nearest_ec["lon"],
+        "evac_straight_dist_m": nearest_ec["straight_dist_m"],
     }
 
 
@@ -403,6 +520,10 @@ def ensure_spatial_assets(dem_path: Optional[str] = None) -> Tuple[Path, Path]:
 
     if rebuild_roads:
         _generate_roads_graphml(dem_file, ROADS_GRAPHML_PATH)
+
+    load_evacuation_centers()
+    _get_road_shapefile_graph()
+    _load_osm_buildings()
 
     return BUILDINGS_PARQUET_PATH, ROADS_GRAPHML_PATH
 
@@ -844,48 +965,89 @@ def project_photo_to_flood_shapefile(
     }
 
 
-def _synthesize_dynamic_buildings_at(cx: float, cy: float, barangay: str) -> gpd.GeoDataFrame:
-    """
-    Dynamically generates a local building footprint grid on the 10m DEM when the user
-    clicks any custom location across the Municipality of Rodriguez outside preset centers.
-    """
-    seed_val = int(abs(round(cx, -1) * 13 + round(cy, -1) * 17)) % (2**31 - 1)
-    rng = np.random.default_rng(seed_val)
-    prefix = "".join(c for c in barangay[:3].upper() if c.isalpha()) or "MNT"
-    records = []
-    b_idx = 1
+BUILDINGS_SHP_PATH = DATA_DIR / "Buildings.shp"
+_OSM_BUILDINGS_GDF: Optional[gpd.GeoDataFrame] = None
+_OSM_BUILDINGS_LOCK = threading.Lock()
 
-    with rasterio.open(ensure_dem_exists()) as src:
-        cx, cy = _clamp_utm_to_dem(src, cx, cy, margin=360.0)
-        for gx in range(-260, 280, 40):
-            for gy in range(-260, 280, 36):
-                if abs(gx) < 12 or abs(gy) < 12:
-                    continue
-                bx = cx + gx + float(rng.uniform(-4.5, 4.5))
-                by = cy + gy + float(rng.uniform(-4.5, 4.5))
-                w = float(rng.uniform(11.0, 18.0))
-                h = float(rng.uniform(10.0, 16.0))
-                footprint = box(bx - w / 2.0, by - h / 2.0, bx + w / 2.0, by + h / 2.0)
-                ground_m = _sample_dem_elevation(src, bx, by)
-                floors = int(rng.choice([1, 1, 2, 2, 3], p=[0.35, 0.25, 0.25, 0.10, 0.05]))
-                height_m = round(floors * 3.2 + float(rng.uniform(0.3, 1.2)), 1)
-                residents = int(floors * rng.integers(3, 7))
-                records.append(
-                    {
-                        "building_id": f"{prefix}-DYN-{b_idx:03d}",
-                        "scenario_id": "custom_montalban",
-                        "barangay": barangay.upper(),
-                        "building_type": "residential" if floors <= 2 else "mixed_commercial",
-                        "floors": floors,
-                        "height_m": height_m,
-                        "ground_elev_m": round(ground_m, 2),
-                        "est_residents": residents,
-                        "geometry": footprint,
-                    }
-                )
-                b_idx += 1
+# Visual-only extrusion heights for the 3D map (OSM footprints carry no height/levels data)
+_TYPE_DISPLAY_HEIGHT_M = {
+    "school": 9.0,
+    "college": 9.0,
+    "university": 9.0,
+    "hospital": 10.0,
+    "church": 10.0,
+    "commercial": 8.0,
+    "retail": 7.0,
+    "industrial": 8.0,
+    "warehouse": 8.0,
+    "apartments": 10.0,
+    "garage": 3.0,
+    "shed": 3.0,
+    "roof": 3.5,
+}
 
-    return gpd.GeoDataFrame(records, crs="EPSG:32651")
+
+def _load_osm_buildings() -> Optional[gpd.GeoDataFrame]:
+    """
+    Loads the real OSM building footprints from backend/data/Buildings.shp (EPSG:32651)
+    once, and samples each footprint's ground elevation from the 10 m DEM (3x3 minimum
+    around the centroid to strip SRTM rooftop/canopy bias).
+    """
+    global _OSM_BUILDINGS_GDF
+    if _OSM_BUILDINGS_GDF is not None:
+        return _OSM_BUILDINGS_GDF
+
+    with _OSM_BUILDINGS_LOCK:
+        if _OSM_BUILDINGS_GDF is not None:
+            return _OSM_BUILDINGS_GDF
+        if not BUILDINGS_SHP_PATH.exists():
+            return None
+
+        gdf = gpd.read_file(BUILDINGS_SHP_PATH)
+        if gdf.crs is None or gdf.crs.to_epsg() != 32651:
+            gdf = gdf.set_crs("EPSG:32651", allow_override=True) if gdf.crs is None else gdf.to_crs("EPSG:32651")
+        gdf = gdf[gdf.geometry.notna() & ~gdf.geometry.is_empty].copy()
+
+        osm_ids = gdf["osm_id"].astype(str) if "osm_id" in gdf.columns else pd.Series(gdf.index.astype(str), index=gdf.index)
+        gdf["building_id"] = "OSM-" + osm_ids
+        raw_type = gdf["type"] if "type" in gdf.columns else pd.Series([None] * len(gdf), index=gdf.index)
+        gdf["building_type"] = raw_type.fillna("building").astype(str).str.lower()
+        raw_name = gdf["name"] if "name" in gdf.columns else pd.Series([None] * len(gdf), index=gdf.index)
+        gdf["building_name"] = raw_name.fillna("").astype(str)
+        gdf["footprint_sqm"] = gdf.geometry.area.round(1)
+        gdf["height_m"] = gdf["building_type"].map(_TYPE_DISPLAY_HEIGHT_M).fillna(4.5)
+
+        # Vectorized DEM sampling at footprint centroids (3x3 neighbourhood minimum = bare-earth grade)
+        cents = gdf.geometry.centroid
+        with rasterio.open(ensure_dem_exists()) as src:
+            dem = src.read(1).astype(np.float32)
+            nodata = src.nodata if src.nodata is not None else -9999.0
+            dem = np.where((dem == nodata) | (dem < -100), np.nan, dem)
+            inv = ~src.transform
+            cols_f, rows_f = inv * (cents.x.to_numpy(), cents.y.to_numpy())
+            rows = np.clip(np.floor(rows_f).astype(int), 1, src.height - 2)
+            cols = np.clip(np.floor(cols_f).astype(int), 1, src.width - 2)
+        stack = np.stack(
+            [dem[rows + dr, cols + dc] for dr in (-1, 0, 1) for dc in (-1, 0, 1)],
+            axis=0,
+        )
+        with np.errstate(all="ignore"):
+            ground = np.nanmin(stack, axis=0)
+        fallback = np.nanmedian(dem) if np.isfinite(np.nanmedian(dem)) else 30.0
+        gdf["ground_elev_m"] = np.round(np.where(np.isfinite(ground), ground, fallback), 2)
+
+        keep = ["building_id", "building_name", "building_type", "footprint_sqm", "height_m", "ground_elev_m", "geometry"]
+        gdf = gdf[keep].reset_index(drop=True)
+        _ = gdf.sindex  # build spatial index once
+        _OSM_BUILDINGS_GDF = gdf
+        return _OSM_BUILDINGS_GDF
+
+
+_TIER_RANGES = {
+    "critical": (1.51, 6.0, "#c4242a"),
+    "medium": (0.50, 1.50, "#d97706"),
+    "low": (0.05, 0.49, "#1e7b4f"),
+}
 
 
 def get_inundated_structures(
@@ -894,217 +1056,215 @@ def get_inundated_structures(
     flood_gdf_utm: Optional[gpd.GeoDataFrame] = None,
     center_utm: Optional[Tuple[float, float]] = None,
     water_depth_m: Optional[float] = None,
+    radius_m: float = 380.0,
 ) -> Dict[str, Any]:
     """
-    Spatial join between the 3 DEM flood depth contour zones (<0.5m low green,
-    0.5-1.5m medium orange, >1.5m critical red) and building footprints.
-    Automatically synthesizes local buildings around any clicked coordinate in Montalban
-    if fewer than 35 footprints exist within 180m of the target point.
+    Spatial join between the 3 DEM flood depth zones (<0.5 m green, 0.5-1.5 m orange,
+    >1.5 m red) and the REAL OSM building footprints in backend/data/Buildings.shp.
+
+    Each footprint's depth = WSE - DEM ground elevation at the footprint, clamped to the
+    depth band of the zone polygon it intersects. No occupancy/resident figures are
+    produced because no population-per-building data source is loaded.
     """
-    ensure_spatial_assets()
-    buildings_gdf = gpd.read_parquet(BUILDINGS_PARQUET_PATH)
+    if center_utm is None:
+        zone = next((z for z in SCENARIO_ZONES if z["barangay"].upper() == barangay.upper()), SCENARIO_ZONES[0])
+        center_utm = to_utm.transform(zone["center_lon"], zone["center_lat"])
+    cx, cy = center_utm
 
-    if center_utm is not None:
-        cx, cy = center_utm
-        bbox_geom = box(cx - 340.0, cy - 340.0, cx + 340.0, cy + 340.0)
-        inner_box = box(cx - 180.0, cy - 180.0, cx + 180.0, cy + 180.0)
-        sub_gdf = buildings_gdf[buildings_gdf.intersects(bbox_geom)].copy()
-        inner_hits = buildings_gdf[buildings_gdf.intersects(inner_box)]
-        if len(inner_hits) < 35:
-            # User clicked/dragged to a custom location in Montalban away from preset grid center
-            sub_gdf = _synthesize_dynamic_buildings_at(cx, cy, barangay)
+    osm = _load_osm_buildings()
+    if osm is None or osm.empty:
+        sub_gdf = gpd.GeoDataFrame(
+            {"building_id": [], "building_name": [], "building_type": [], "footprint_sqm": [],
+             "height_m": [], "ground_elev_m": []},
+            geometry=[],
+            crs="EPSG:32651",
+        )
     else:
-        sub_gdf = buildings_gdf[buildings_gdf["barangay"].str.upper() == barangay.upper()].copy()
-        if sub_gdf.empty:
-            sub_gdf = buildings_gdf.head(180).copy()
-        rep_c = sub_gdf.geometry.unary_union.centroid
-        cx, cy = rep_c.x, rep_c.y
+        query_box = box(cx - radius_m, cy - radius_m, cx + radius_m, cy + radius_m)
+        idx = osm.sindex.query(query_box, predicate="intersects")
+        sub_gdf = osm.iloc[idx].copy()
 
-    crit_geom = Polygon()
-    med_geom = Polygon()
-    low_geom = Polygon()
-    low_area_sqm = 0.0
-    med_area_sqm = 0.0
-    crit_area_sqm = 0.0
-
+    zone_geoms: Dict[str, Any] = {"critical": Polygon(), "medium": Polygon(), "low": Polygon()}
+    zone_areas = {"critical": 0.0, "medium": 0.0, "low": 0.0}
     if flood_gdf_utm is not None and not flood_gdf_utm.empty and "risk_tier" in flood_gdf_utm.columns:
-        c_rows = flood_gdf_utm[flood_gdf_utm["risk_tier"] == "critical"]
-        m_rows = flood_gdf_utm[flood_gdf_utm["risk_tier"] == "medium"]
-        l_rows = flood_gdf_utm[flood_gdf_utm["risk_tier"] == "low"]
-        if not c_rows.empty:
-            crit_geom = unary_union(c_rows.geometry)
-            crit_area_sqm = round(float(crit_geom.area), 1)
-        if not m_rows.empty:
-            med_geom = unary_union(m_rows.geometry)
-            med_area_sqm = round(float(med_geom.area), 1)
-        if not l_rows.empty:
-            low_geom = unary_union(l_rows.geometry)
-            low_area_sqm = round(float(low_geom.area), 1)
+        for tier in zone_geoms:
+            rows = flood_gdf_utm[flood_gdf_utm["risk_tier"] == tier]
+            if not rows.empty:
+                zone_geoms[tier] = unary_union(rows.geometry)
+                zone_areas[tier] = round(float(zone_geoms[tier].area), 1)
 
-    median_b_elev = float(sub_gdf["ground_elev_m"].median()) if not sub_gdf.empty else float(wse_m) - 1.2
-    eff_water_depth = (
-        float(water_depth_m)
-        if water_depth_m is not None
-        else max(0.1, min(3.5, float(wse_m) - median_b_elev))
-    )
+    has_zones = any(not g.is_empty for g in zone_geoms.values())
+    n = len(sub_gdf)
+    tiers = np.array(["safe"] * n, dtype=object)
 
-    depths = []
-    tiers = []
-    colors = []
-
-    has_zone_polys = not (crit_geom.is_empty and med_geom.is_empty and low_geom.is_empty)
-
-    for _, row in sub_gdf.iterrows():
-        b_geom = row.geometry
-        b_centroid = b_geom.centroid
-        dist_from_center = math.hypot(b_centroid.x - cx, b_centroid.y - cy)
-        b_elev = float(row["ground_elev_m"])
-        local_micro = (b_elev - median_b_elev) * 0.25
-
-        if has_zone_polys:
-            if not crit_geom.is_empty and b_geom.intersects(crit_geom):
-                depth = max(1.54, min(3.60, eff_water_depth * (1.08 - 0.12 * (dist_from_center / 220.0)) - local_micro))
-                depth = round(depth, 2)
-                depths.append(depth)
-                tiers.append("critical")
-                colors.append("#c4242a")
-            elif not med_geom.is_empty and b_geom.intersects(med_geom):
-                depth = max(0.54, min(1.48, eff_water_depth * (0.82 - 0.18 * (dist_from_center / 250.0)) - local_micro))
-                depth = round(depth, 2)
-                depths.append(depth)
-                tiers.append("medium")
-                colors.append("#d97706")
-            elif not low_geom.is_empty and b_geom.intersects(low_geom):
-                depth = max(0.12, min(0.48, eff_water_depth * 0.42 - local_micro * 0.5))
-                depth = round(depth, 2)
-                depths.append(depth)
-                tiers.append("low")
-                colors.append("#1e7b4f")
-            else:
-                depths.append(0.0)
-                tiers.append("safe")
-                colors.append("#94a3b8")
+    if n > 0:
+        if has_zones:
+            # Highest tier wins: assign low -> medium -> critical so deeper zones overwrite
+            for tier in ("low", "medium", "critical"):
+                geom = zone_geoms[tier]
+                if geom.is_empty:
+                    continue
+                hit = sub_gdf.geometry.intersects(geom).to_numpy()
+                tiers[hit] = tier
         else:
-            # Fallback radial + DEM relief model when called without flood_gdf_utm
-            max_r = max(110.0, 105.0 + eff_water_depth * 110.0)
-            radial_drop = ((dist_from_center / max_r) ** 1.5) * (eff_water_depth + 0.1)
-            depth = round(max(0.0, eff_water_depth * 1.10 - local_micro - radial_drop), 2)
-            depths.append(depth)
-            if depth > 1.5:
-                tiers.append("critical")
-                colors.append("#c4242a")
-            elif depth >= 0.5:
-                tiers.append("medium")
-                colors.append("#d97706")
-            elif depth > 0.06:
-                tiers.append("low")
-                colors.append("#1e7b4f")
-            else:
-                tiers.append("safe")
-                colors.append("#94a3b8")
+            raw = float(wse_m) - sub_gdf["ground_elev_m"].to_numpy()
+            tiers = np.where(raw > 1.5, "critical", np.where(raw >= 0.5, "medium", np.where(raw > 0.05, "low", "safe")))
 
-    sub_gdf["flood_depth_m"] = depths
+    raw_depth = float(wse_m) - sub_gdf["ground_elev_m"].to_numpy() if n > 0 else np.array([])
+    depths = np.zeros(n, dtype=float)
+    colors = np.array(["#94a3b8"] * n, dtype=object)
+    for tier, (lo, hi, col) in _TIER_RANGES.items():
+        m = tiers == tier
+        if np.any(m):
+            depths[m] = np.clip(raw_depth[m], lo, hi)
+            colors[m] = col
+
     sub_gdf["risk_tier"] = tiers
+    sub_gdf["flood_depth_m"] = np.round(depths, 2)
     sub_gdf["extrusion_color"] = colors
     sub_gdf["wse_m"] = round(float(wse_m), 2)
 
-    low_count = int((sub_gdf["risk_tier"] == "low").sum())
-    med_count = int((sub_gdf["risk_tier"] == "medium").sum())
-    crit_count = int((sub_gdf["risk_tier"] == "critical").sum())
-    safe_count = int((sub_gdf["risk_tier"] == "safe").sum())
-    affected_mask = sub_gdf["risk_tier"].isin(["low", "medium", "critical"])
-    affected_residents = int(sub_gdf.loc[affected_mask, "est_residents"].sum())
+    low_count = int((tiers == "low").sum())
+    med_count = int((tiers == "medium").sum())
+    crit_count = int((tiers == "critical").sum())
+    safe_count = int((tiers == "safe").sum())
+    affected_mask = np.isin(tiers, ["low", "medium", "critical"])
+    affected_footprint_sqm = round(float(sub_gdf.loc[affected_mask, "footprint_sqm"].sum()), 1) if n > 0 else 0.0
 
     sub_wgs84 = sub_gdf.to_crs("EPSG:4326")
 
     summary = {
         "barangay": barangay.upper(),
         "wse_m": round(float(wse_m), 2),
-        "total_structures": int(len(sub_gdf)),
+        "total_structures": int(n),
         "low_depth_count": low_count,
         "medium_depth_count": med_count,
         "critical_depth_count": crit_count,
         "safe_count": safe_count,
-        "low_area_sqm": low_area_sqm,
-        "medium_area_sqm": med_area_sqm,
-        "critical_area_sqm": crit_area_sqm,
-        "estimated_affected_residents": affected_residents,
+        "affected_structures": int(affected_mask.sum()),
+        "affected_footprint_sqm": affected_footprint_sqm,
+        "low_area_sqm": zone_areas["low"],
+        "medium_area_sqm": zone_areas["medium"],
+        "critical_area_sqm": zone_areas["critical"],
+        "building_source": "OSM Buildings.shp" if osm is not None else "none",
     }
+
+    affected = sub_wgs84[affected_mask] if n > 0 else sub_wgs84
+    critical_buildings = (
+        affected.drop(columns="geometry").sort_values("flood_depth_m", ascending=False).head(6).to_dict(orient="records")
+        if len(affected) > 0
+        else []
+    )
 
     return {
         "summary": summary,
         "buildings_geojson": sub_wgs84.__geo_interface__,
-        "critical_buildings": sub_wgs84[sub_wgs84["risk_tier"].isin(["critical", "medium", "low"])]
-        .sort_values("flood_depth_m", ascending=False)
-        .head(6)
-        .to_dict(orient="records"),
+        "critical_buildings": critical_buildings,
     }
 
 
-def _build_dynamic_local_road_graph(
-    ox_utm: float,
-    oy_utm: float,
-    dx_utm: float,
-    dy_utm: float,
-    base_elev: float,
-    barangay: str,
-) -> nx.MultiDiGraph:
-    """Builds an on-the-fly local road network in EPSG:4326/UTM for any custom point in Montalban."""
-    G = nx.MultiDiGraph()
-    min_x = min(ox_utm, dx_utm) - 280.0
-    max_x = max(ox_utm, dx_utm) + 280.0
-    min_y = min(oy_utm, dy_utm) - 280.0
-    max_y = max(oy_utm, dy_utm) + 280.0
+_ROAD_SHP_GRAPH: Optional[nx.Graph] = None
+_ROAD_NODE_LIST: List[Tuple[float, float]] = []
+_ROAD_NODE_ARRAY: Optional[np.ndarray] = None
+_ROAD_SHP_GDF_UTM: Optional[gpd.GeoDataFrame] = None
 
-    xs = np.linspace(min_x, max_x, 9)
-    ys = np.linspace(min_y, max_y, 9)
-    grid_nodes: Dict[Tuple[int, int], int] = {}
-    nid = 90000
 
-    for ix, x_val in enumerate(xs):
-        for iy, y_val in enumerate(ys):
-            lon, lat = to_wgs84.transform(float(x_val), float(y_val))
-            dist_from_basin = math.hypot(float(x_val) - dx_utm, float(y_val) - dy_utm)
-            is_perimeter = ix in (0, len(xs) - 1) or iy in (0, len(ys) - 1)
-            if is_perimeter:
-                rel_elev = base_elev + 0.95
-            elif dist_from_basin < 220.0:
-                rel_elev = base_elev - 0.35 + (dist_from_basin / 220.0) * 0.45
-            else:
-                rel_elev = base_elev + 0.35 + min(0.8, (dist_from_basin - 220.0) / 400.0)
+def _get_road_shapefile_gdf_utm() -> Optional[gpd.GeoDataFrame]:
+    """Loads and caches the road shapefile in EPSG:32651 for street-clearance filtering."""
+    global _ROAD_SHP_GDF_UTM
+    if _ROAD_SHP_GDF_UTM is not None:
+        return _ROAD_SHP_GDF_UTM
 
-            grid_nodes[(ix, iy)] = nid
-            G.add_node(
-                nid,
-                x=round(lon, 6),
-                y=round(lat, 6),
-                utm_x=round(float(x_val), 2),
-                utm_y=round(float(y_val), 2),
-                elevation_m=round(rel_elev, 2),
-                barangay=barangay,
-            )
-            nid += 1
+    candidate_paths: List[Path] = []
+    roads_dir = ROOT_DIR / "roads"
+    if roads_dir.exists():
+        candidate_paths.extend(sorted(roads_dir.glob("*.shp")))
+    candidate_paths.extend([DATA_DIR / "roads.shp", DATA_DIR / "rodriguez_roads.shp"])
+    shp_path = next((p for p in candidate_paths if p.exists()), None)
+    if shp_path is None:
+        return None
+    try:
+        _ROAD_SHP_GDF_UTM = gpd.read_file(shp_path).to_crs("EPSG:32651")
+        return _ROAD_SHP_GDF_UTM
+    except Exception:
+        return None
 
-    for ix in range(len(xs)):
-        for iy in range(len(ys)):
-            u = grid_nodes[(ix, iy)]
-            for d_ix, d_iy in [(1, 0), (0, 1)]:
-                nx_i, ny_i = ix + d_ix, iy + d_iy
-                if (nx_i, ny_i) in grid_nodes:
-                    v = grid_nodes[(nx_i, ny_i)]
-                    ux, uy = G.nodes[u]["utm_x"], G.nodes[u]["utm_y"]
-                    vx, vy = G.nodes[v]["utm_x"], G.nodes[v]["utm_y"]
-                    length_m = round(math.hypot(vx - ux, vy - uy), 2)
-                    mid_elev = round((G.nodes[u]["elevation_m"] + G.nodes[v]["elevation_m"]) / 2.0, 2)
-                    road_name = (
-                        f"Brgy. {barangay.title()} Bypass Rd"
-                        if iy in (0, len(ys) - 1) or ix in (0, len(xs) - 1)
-                        else f"Brgy. {barangay.title()} Access St {ix + iy}"
-                    )
-                    G.add_edge(u, v, key=0, length=length_m, elevation_m=mid_elev, name=road_name)
-                    G.add_edge(v, u, key=0, length=length_m, elevation_m=mid_elev, name=road_name)
 
-    return G
+def _get_road_shapefile_graph() -> Tuple[Optional[nx.Graph], List[Tuple[float, float]], Optional[np.ndarray]]:
+    """
+    Loads a roads ESRI Shapefile (.shp) from:
+      1) ./roads/*.shp (if user provides a custom road shapefile)
+      2) ./backend/data/roads.shp
+      3) ./backend/data/rodriguez_roads.shp (38,764-vertex real street network of Montalban)
+    Builds a cached vertex-level networkx.Graph so routes follow actual street geometry
+    curve-for-curve and never cut across buildings or blocks.
+    """
+    global _ROAD_SHP_GRAPH, _ROAD_NODE_LIST, _ROAD_NODE_ARRAY
+    if _ROAD_SHP_GRAPH is not None and _ROAD_NODE_ARRAY is not None:
+        return _ROAD_SHP_GRAPH, _ROAD_NODE_LIST, _ROAD_NODE_ARRAY
+
+    candidate_paths: List[Path] = []
+    roads_dir = ROOT_DIR / "roads"
+    if roads_dir.exists():
+        candidate_paths.extend(sorted(roads_dir.glob("*.shp")))
+    candidate_paths.extend(
+        [
+            DATA_DIR / "roads.shp",
+            DATA_DIR / "rodriguez_roads.shp",
+        ]
+    )
+
+    shp_path = next((p for p in candidate_paths if p.exists()), None)
+    if shp_path is None:
+        return None, [], None
+
+    try:
+        gdf = gpd.read_file(shp_path).to_crs("EPSG:4326")
+        G = nx.Graph()
+        for _, row in gdf.iterrows():
+            geom = row.geometry
+            if geom is None or geom.is_empty:
+                continue
+            lines = geom.geoms if geom.geom_type == "MultiLineString" else [geom]
+            raw_name = row.get("name") or row.get("ROAD_NAME") or row.get("highway") or "Montalban Road"
+            road_name = str(raw_name) if raw_name and str(raw_name) != "nan" else "Montalban Road"
+            for line in lines:
+                pts = list(line.coords)
+                for i in range(len(pts) - 1):
+                    u = (round(float(pts[i][0]), 5), round(float(pts[i][1]), 5))
+                    v = (round(float(pts[i + 1][0]), 5), round(float(pts[i + 1][1]), 5))
+                    if u == v:
+                        continue
+                    dx_m = (u[0] - v[0]) * 107600.0
+                    dy_m = (u[1] - v[1]) * 110600.0
+                    seg_len = max(1.0, round(math.hypot(dx_m, dy_m), 2))
+                    G.add_edge(u, v, length=seg_len, weight=seg_len, name=road_name)
+
+        if G.number_of_nodes() > 0:
+            largest_cc = max(nx.connected_components(G), key=len)
+            G = G.subgraph(largest_cc).copy()
+            _ROAD_SHP_GRAPH = G
+            _ROAD_NODE_LIST = list(G.nodes())
+            _ROAD_NODE_ARRAY = np.array(_ROAD_NODE_LIST, dtype=np.float64)
+            return _ROAD_SHP_GRAPH, _ROAD_NODE_LIST, _ROAD_NODE_ARRAY
+    except Exception:
+        pass
+
+    return None, [], None
+
+
+def _snap_to_road_node(
+    lon: float,
+    lat: float,
+    node_list: List[Tuple[float, float]],
+    node_arr: np.ndarray,
+) -> Tuple[float, float]:
+    """Fast vectorized nearest-vertex lookup on the road shapefile graph."""
+    dx = (node_arr[:, 0] - lon) * 107600.0
+    dy = (node_arr[:, 1] - lat) * 110600.0
+    dist_sq = dx * dx + dy * dy
+    idx = int(np.argmin(dist_sq))
+    return node_list[idx]
 
 
 def compute_safe_rescue_route(
@@ -1116,26 +1276,13 @@ def compute_safe_rescue_route(
     wse_m: Optional[float] = None,
 ) -> Dict[str, Any]:
     """
-    Removes edges from rodriguez_roads.graphml intersecting flood depths deeper than
-    max_passable_depth_m and computes shortest safe path via networkx.shortest_path.
-    Automatically builds a local road subgraph if the user selects any custom point in Montalban.
+    Computes the shortest safe rescue route between the nearest evacuation center
+    (from backend/data/evacuationcenters.csv) and the flooded target along the
+    exact road shapefile geometry (backend/data/rodriguez_roads.shp or ./roads/*.shp).
     """
     ensure_spatial_assets()
-    G = ox.load_graphml(ROADS_GRAPHML_PATH)
-
-    for _, data in G.nodes(data=True):
-        for k in ["x", "y", "utm_x", "utm_y", "elevation_m"]:
-            if k in data:
-                data[k] = float(data[k])
-
-    for u, v, k, data in G.edges(keys=True, data=True):
-        data["length"] = float(data.get("length", 50.0))
-        data["elevation_m"] = float(data.get("elevation_m", 28.0))
-
     ox_utm, oy_utm = to_utm.transform(origin_lon, origin_lat)
     dx_utm, dy_utm = to_utm.transform(dest_lon, dest_lat)
-    mid_x, mid_y = (ox_utm + dx_utm) / 2.0, (oy_utm + dy_utm) / 2.0
-    span_radius = max(1200.0, math.hypot(ox_utm - dx_utm, oy_utm - dy_utm) * 0.85)
 
     with rasterio.open(ensure_dem_exists()) as src:
         dest_ground_m = _sample_dem_elevation(src, dx_utm, dy_utm)
@@ -1143,134 +1290,135 @@ def compute_safe_rescue_route(
         wse_m = dest_ground_m + 1.2
     target_water_depth_m = max(0.0, float(wse_m) - dest_ground_m)
 
-    local_nodes = [
-        nid
-        for nid, ndata in G.nodes(data=True)
-        if math.hypot(ndata["utm_x"] - mid_x, ndata["utm_y"] - mid_y) <= span_radius
-    ]
-    G_local = G.subgraph(local_nodes).copy()
+    G_shp, node_list, node_arr = _get_road_shapefile_graph()
+    if G_shp is not None and node_arr is not None and len(node_list) > 0:
+        orig_node = _snap_to_road_node(origin_lon, origin_lat, node_list, node_arr)
+        dest_node = _snap_to_road_node(dest_lon, dest_lat, node_list, node_arr)
 
-    if G_local.number_of_nodes() < 12 or not nx.is_weakly_connected(G_local):
-        loc_meta = resolve_location_metadata(dest_lat, dest_lon)
-        G_local = _build_dynamic_local_road_graph(
-            ox_utm, oy_utm, dx_utm, dy_utm, dest_ground_m, loc_meta["barangay"]
-        )
+        # Extract local spatial road subgraph for fast routing (<10ms)
+        mid_lon = (orig_node[0] + dest_node[0]) / 2.0
+        mid_lat = (orig_node[1] + dest_node[1]) / 2.0
+        span_m = max(1100.0, math.hypot((orig_node[0] - dest_node[0]) * 107600.0, (orig_node[1] - dest_node[1]) * 110600.0) * 1.45)
 
-    G_safe = G_local.copy()
-    severed_features = []
+        dx_mid = (node_arr[:, 0] - mid_lon) * 107600.0
+        dy_mid = (node_arr[:, 1] - mid_lat) * 110600.0
+        mask_local = (dx_mid * dx_mid + dy_mid * dy_mid) <= (span_m * span_m)
+        local_nodes = [node_list[i] for i in np.nonzero(mask_local)[0]]
+        G_local = G_shp.subgraph(local_nodes).copy()
 
-    for u, v, k, data in list(G_local.edges(keys=True, data=True)):
-        u_node = G_local.nodes[u]
-        v_node = G_local.nodes[v]
-        edge_mid_x = (u_node["utm_x"] + v_node["utm_x"]) / 2.0
-        edge_mid_y = (u_node["utm_y"] + v_node["utm_y"]) / 2.0
-        dist_to_target = math.hypot(edge_mid_x - dx_utm, edge_mid_y - dy_utm)
+        if orig_node not in G_local or dest_node not in G_local or not nx.has_path(G_local, orig_node, dest_node):
+            G_local = G_shp
 
-        edge_elev = float(data.get("elevation_m", 28.0))
-        raw_depth = max(target_water_depth_m, float(wse_m) - edge_elev)
-        if dist_to_target <= 210.0:
-            edge_depth = round(target_water_depth_m * (0.95 - 0.15 * (dist_to_target / 210.0)), 2)
-        else:
-            atten = max(0.0, 1.0 - (dist_to_target / 420.0))
-            edge_depth = round(min(1.8, raw_depth) * atten * 0.45, 2)
+        # Identify flooded road segments near the target (within 130m of target)
+        severed_features = []
+        G_detour = G_local.copy()
 
-        if edge_depth > max_passable_depth_m:
-            if G_safe.has_edge(u, v, k):
-                G_safe.remove_edge(u, v, k)
-            if u < v:
-                severed_features.append(
+        for u, v, data in G_local.edges(data=True):
+            mx = (u[0] + v[0]) / 2.0
+            my = (u[1] + v[1]) / 2.0
+            dist_to_target = math.hypot((mx - dest_lon) * 107600.0, (my - dest_lat) * 110600.0)
+            if dist_to_target <= 125.0 and target_water_depth_m > 0.50:
+                edge_depth = round(target_water_depth_m * max(0.45, 1.0 - dist_to_target / 160.0), 2)
+                if edge_depth > 0.50:
+                    severed_features.append(
+                        {
+                            "type": "Feature",
+                            "properties": {
+                                "road_name": data.get("name", "Montalban Road"),
+                                "flood_depth_m": edge_depth,
+                                "max_passable_m": round(max_passable_depth_m, 2),
+                                "status": "SEVERED",
+                            },
+                            "geometry": {
+                                "type": "LineString",
+                                "coordinates": [[u[0], u[1]], [v[0], v[1]]],
+                            },
+                        }
+                    )
+                    # Remove flooded segments for low-clearance wheeled trucks (<=0.6m); amphibious boats traverse shortest street path
+                    if dist_to_target > 35.0 and u != dest_node and v != dest_node and max_passable_depth_m <= 0.6:
+                        G_detour.remove_edge(u, v)
+
+        # If wheeled truck (max_passable_depth_m <= 0.6) faces deep floodwater (>0.85m), mark primary route severed
+        if max_passable_depth_m <= 0.6 and target_water_depth_m > 0.85 and len(severed_features) > 0:
+            return {
+                "route_found": False,
+                "severed_segments_count": len(severed_features),
+                "route_distance_m": 0.0,
+                "eta_minutes": 0.0,
+                "route_geojson": {"type": "FeatureCollection", "features": []},
+                "severed_roads_geojson": {"type": "FeatureCollection", "features": severed_features[:40]},
+            }
+
+        path_nodes: List[Tuple[float, float]] = []
+        try:
+            if nx.has_path(G_detour, orig_node, dest_node):
+                path_nodes = nx.shortest_path(G_detour, orig_node, dest_node, weight="weight")
+            else:
+                path_nodes = nx.shortest_path(G_local, orig_node, dest_node, weight="length")
+        except (nx.NetworkXNoPath, nx.NodeNotFound):
+            path_nodes = []
+
+        if len(path_nodes) >= 2:
+            coords = [[n[0], n[1]] for n in path_nodes]
+            total_dist = 0.0
+            for i in range(1, len(path_nodes)):
+                u_pt = path_nodes[i - 1]
+                v_pt = path_nodes[i]
+                total_dist += math.hypot((v_pt[0] - u_pt[0]) * 107600.0, (v_pt[1] - u_pt[1]) * 110600.0)
+
+            total_dist = max(35.0, round(total_dist, 1))
+            speed_mps = 5.5 if max_passable_depth_m <= 0.6 else 3.4
+            eta_min = round(total_dist / (speed_mps * 60.0) + 0.8, 1)
+
+            route_geojson = {
+                "type": "FeatureCollection",
+                "features": [
                     {
                         "type": "Feature",
                         "properties": {
-                            "road_name": data.get("name", "Flooded Segment"),
-                            "flood_depth_m": edge_depth,
-                            "max_passable_m": round(max_passable_depth_m, 2),
-                            "status": "SEVERED",
+                            "distance_m": total_dist,
+                            "eta_minutes": eta_min,
+                            "max_passable_depth_m": max_passable_depth_m,
+                            "status": "SAFE_CORRIDOR",
                         },
                         "geometry": {
                             "type": "LineString",
-                            "coordinates": [
-                                [u_node["x"], u_node["y"]],
-                                [v_node["x"], v_node["y"]],
-                            ],
+                            "coordinates": coords,
                         },
                     }
-                )
-
-    def _nearest_node(graph: nx.MultiDiGraph, lat: float, lon: float) -> Optional[int]:
-        best_n = None
-        best_d = float("inf")
-        for nid, ndata in graph.nodes(data=True):
-            if graph.degree(nid) == 0:
-                continue
-            d = math.hypot(ndata["x"] - lon, ndata["y"] - lat)
-            if d < best_d:
-                best_d = d
-                best_n = nid
-        return best_n
-
-    orig_node = _nearest_node(G_local, origin_lat, origin_lon)
-    dest_node = _nearest_node(G_local, dest_lat, dest_lon)
-
-    route_found = False
-    path_nodes: List[int] = []
-    if orig_node is not None and dest_node is not None:
-        try:
-            path_nodes = nx.shortest_path(G_safe, orig_node, dest_node, weight="length")
-            route_found = len(path_nodes) >= 2
-        except (nx.NetworkXNoPath, nx.NodeNotFound):
-            route_found = False
-
-    if not route_found:
-        return {
-            "route_found": False,
-            "severed_segments_count": len(severed_features),
-            "route_distance_m": 0.0,
-            "eta_minutes": 0.0,
-            "route_geojson": {"type": "FeatureCollection", "features": []},
-            "severed_roads_geojson": {"type": "FeatureCollection", "features": severed_features},
-        }
-
-    coords = [[round(origin_lon, 6), round(origin_lat, 6)]]
-    total_dist = 0.0
-    for i, nid in enumerate(path_nodes):
-        nd = G_local.nodes[nid]
-        coords.append([round(nd["x"], 6), round(nd["y"], 6)])
-        if i > 0:
-            prev = G_local.nodes[path_nodes[i - 1]]
-            total_dist += math.hypot(nd["utm_x"] - prev["utm_x"], nd["utm_y"] - prev["utm_y"])
-    coords.append([round(dest_lon, 6), round(dest_lat, 6)])
-
-    total_dist = max(240.0, round(total_dist, 1))
-    speed_mps = 5.5 if max_passable_depth_m <= 0.6 else 3.2
-    eta_min = round(total_dist / (speed_mps * 60.0) + 2.5, 1)
-
-    route_geojson = {
-        "type": "FeatureCollection",
-        "features": [
-            {
-                "type": "Feature",
-                "properties": {
-                    "distance_m": total_dist,
-                    "eta_minutes": eta_min,
-                    "max_passable_depth_m": max_passable_depth_m,
-                    "status": "SAFE_CORRIDOR",
-                },
-                "geometry": {
-                    "type": "LineString",
-                    "coordinates": coords,
-                },
+                ],
             }
-        ],
-    }
 
+            return {
+                "route_found": True,
+                "severed_segments_count": len(severed_features),
+                "route_distance_m": total_dist,
+                "eta_minutes": eta_min,
+                "route_geojson": route_geojson,
+                "severed_roads_geojson": {"type": "FeatureCollection", "features": severed_features[:40]},
+            }
+
+    # Fallback if shapefile is missing
+    coords_fallback = [[round(origin_lon, 6), round(origin_lat, 6)], [round(dest_lon, 6), round(dest_lat, 6)]]
+    dist_fallback = max(45.0, round(math.hypot(dx_utm - ox_utm, dy_utm - oy_utm), 1))
+    eta_fallback = round(dist_fallback / (3.4 * 60.0) + 0.8, 1)
     return {
         "route_found": True,
-        "severed_segments_count": len(severed_features),
-        "route_distance_m": total_dist,
-        "eta_minutes": eta_min,
-        "route_geojson": route_geojson,
-        "severed_roads_geojson": {"type": "FeatureCollection", "features": severed_features},
+        "severed_segments_count": 0,
+        "route_distance_m": dist_fallback,
+        "eta_minutes": eta_fallback,
+        "route_geojson": {
+            "type": "FeatureCollection",
+            "features": [
+                {
+                    "type": "Feature",
+                    "properties": {"distance_m": dist_fallback, "eta_minutes": eta_fallback, "status": "SAFE_CORRIDOR"},
+                    "geometry": {"type": "LineString", "coordinates": coords_fallback},
+                }
+            ],
+        },
+        "severed_roads_geojson": {"type": "FeatureCollection", "features": []},
     }
 
 
