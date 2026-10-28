@@ -55,14 +55,16 @@ export default function MapViewcone({
   const buildingClickHandledRef = useRef(false);
   const hasInitialFlownRef = useRef(false);
   const hasRouteFlownRef = useRef(false);
+  const lastCameraCenterRef = useRef(null);
 
   useEffect(() => {
-    if (!cameraPinPlaced) {
-      setIsCameraLocked(false);
-      isCameraLockedRef.current = false;
-      if (cameraMarkerRef.current) {
-        cameraMarkerRef.current.setDraggable(true);
-      }
+    // Keep the lock in sync with placement decided outside this panel (e.g.
+    // an EXIF geotag pre-places the pin in App): placed = anchored, not
+    // placed = draggable. The header toggle can still unlock it manually.
+    setIsCameraLocked(Boolean(cameraPinPlaced));
+    isCameraLockedRef.current = Boolean(cameraPinPlaced);
+    if (cameraMarkerRef.current) {
+      cameraMarkerRef.current.setDraggable(!cameraPinPlaced);
     }
   }, [cameraPinPlaced]);
 
@@ -587,6 +589,25 @@ export default function MapViewcone({
       hasInitialFlownRef.current = true;
     }
   }, [mapReady, routeCoords]);
+
+  useEffect(() => {
+    if (!mapRef.current || !mapReady) return;
+    const key = `${cameraParams.cam_lon},${cameraParams.cam_lat}`;
+    if (lastCameraCenterRef.current === null) {
+      lastCameraCenterRef.current = key; // first ready: initial fly handles it
+      return;
+    }
+    if (lastCameraCenterRef.current === key) return;
+    lastCameraCenterRef.current = key;
+    try {
+      mapRef.current.flyTo({
+        center: [cameraParams.cam_lon, cameraParams.cam_lat],
+        zoom: Math.max(mapRef.current.getZoom(), 15.5),
+        pitch: 50,
+        duration: 650,
+      });
+    } catch {}
+  }, [mapReady, cameraParams.cam_lon, cameraParams.cam_lat]);
 
   useEffect(() => {
     if (cameraMarkerRef.current) {

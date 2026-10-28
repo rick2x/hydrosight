@@ -30,9 +30,9 @@ from backend.meta_agents import (
     DISPATCH_LOG_PATH,
     analyze_water_level_with_sam3,
     ensure_sample_photos,
+    extract_exif_geotag,
     get_scenarios,
     run_autonomous_triage_agent,
-    simulate_typhoon_surge_with_muse_image,
 )
 from backend.schemas import (
     AnalyzePhotoResponse,
@@ -40,8 +40,6 @@ from backend.schemas import (
     ProjectFloodRequest,
     ProjectFloodResponse,
     ScenarioPreset,
-    SurgeSimulationRequest,
-    SurgeSimulationResponse,
     TriageRouteRequest,
     TriageRouteResponse,
 )
@@ -70,7 +68,9 @@ app.mount("/static/photos", StaticFiles(directory=str(PHOTOS_DIR)), name="photos
 
 
 def _save_normalized_upload(raw_bytes: bytes) -> Path:
-    """Convert any uploaded image bytes into a normalized RGB JPEG inside PHOTOS_DIR."""
+    """Convert any uploaded image bytes into a normalized RGB JPEG inside PHOTOS_DIR.
+    Re-saving as plain RGB JPEG strips EXIF (including GPS), so extract any
+    geotag from the raw bytes BEFORE calling this."""
     PHOTOS_DIR.mkdir(parents=True, exist_ok=True)
     out_path = PHOTOS_DIR / f"upload_{uuid.uuid4().hex[:10]}.jpg"
     try:
@@ -117,6 +117,7 @@ async def analyze_photo(
 ) -> AnalyzePhotoResponse:
     resolved_scenario = scenario_id or "kasiglahan_village"
     uploaded_path: Optional[Path] = None
+    photo_geotag = None
     force_low_conf = False
 
     content_type = request.headers.get("content-type", "")
@@ -129,16 +130,19 @@ async def analyze_photo(
             if "," in img_b64:
                 img_b64 = img_b64.split(",", 1)[1]
             raw_bytes = base64.b64decode(img_b64)
+            photo_geotag = extract_exif_geotag(raw_bytes)
             uploaded_path = _save_normalized_upload(raw_bytes)
     elif file is not None:
         raw_bytes = await file.read()
         if raw_bytes:
+            photo_geotag = extract_exif_geotag(raw_bytes)
             uploaded_path = _save_normalized_upload(raw_bytes)
 
     return analyze_water_level_with_sam3(
         scenario_id=resolved_scenario,
         uploaded_image_path=uploaded_path,
         force_low_confidence_check=force_low_conf,
+        photo_geotag=photo_geotag,
     )
 
 
@@ -185,22 +189,6 @@ def project_flood(req: ProjectFloodRequest) -> ProjectFloodResponse:
 @app.post("/api/v1/triage-route", response_model=TriageRouteResponse)
 def triage_route(req: TriageRouteRequest) -> TriageRouteResponse:
     return run_autonomous_triage_agent(req)
-
-
-@app.post("/api/v1/simulate-surge", response_model=SurgeSimulationResponse)
-def simulate_surge(req: SurgeSimulationRequest) -> SurgeSimulationResponse:
-    return simulate_typhoon_surge_with_muse_image(
-        scenario_id=req.scenario_id,
-        current_depth_m=req.current_depth_m,
-        surge_delta_m=req.surge_delta_m,
-        barangay=req.barangay,
-        cam_lat=req.cam_lat,
-        cam_lon=req.cam_lon,
-        azimuth_deg=req.azimuth_deg,
-        fov_deg=req.fov_deg,
-        click_u=req.click_u,
-        est_distance_m=req.est_distance_m,
-    )
 
 
 @app.get("/api/v1/download-shp/{run_id}")

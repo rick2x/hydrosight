@@ -47,6 +47,16 @@ class AnalyzePhotoRequest(BaseModel):
     custom_prompts: Optional[List[str]] = Field(None, description="Optional override prompts for SAM 3.1")
 
 
+class PhotoGeotag(BaseModel):
+    lat: float = Field(..., ge=-90.0, le=90.0, description="EXIF GPS latitude (WGS84) from the raw uploaded photo")
+    lon: float = Field(..., ge=-180.0, le=180.0, description="EXIF GPS longitude (WGS84) from the raw uploaded photo")
+    source: str = Field("exif_gps", description="Always exif_gps; the stored photo copy has EXIF stripped")
+    direction_deg: float | None = Field(None, ge=0.0, le=360.0, description="EXIF GPSImgDirection (camera bearing) if recorded by the phone")
+    altitude_m: float | None = Field(None, description="EXIF GPS altitude in metres if present")
+    within_pilot_area: bool = Field(..., description="True if inside the Rodriguez pilot DEM coverage (14.69-14.89 N, 121.10-121.35 E); outside geotags are reported but never auto-placed")
+    note: str = Field(..., description="Operator-facing caution: geotag pre-places the pin, confirm/drag it before projecting")
+
+
 class AnalyzePhotoResponse(BaseModel):
     scenario_id: str
     photo_url: str
@@ -60,6 +70,7 @@ class AnalyzePhotoResponse(BaseModel):
     fallback_used: bool = False
     execution_mode: str = 'live_inference'
     is_custom_upload: bool = False
+    photo_geotag: PhotoGeotag | None = Field(None, description='EXIF GPS from the raw upload, if present. Null for scenario photos and for uploads whose EXIF was stripped (messenger apps, screenshots).')
 
 
 class DeletePhotoRequest(BaseModel):
@@ -158,34 +169,32 @@ class AgentStepLog(BaseModel):
     latency_ms: int
 
 
-class DispatchTicket(BaseModel):
-    ticket_id: str
-    priority: str = Field(..., description="CRITICAL, HIGH, or MEDIUM")
+class AreaAdvisory(BaseModel):
     barangay: str
-    cluster_name: str
-    building_id: str
-    building_name: Optional[str] = None
-    building_type: Optional[str] = None
-    infra_category: Optional[str] = None
-    is_evac_center: Optional[bool] = False
-    evac_center_name: Optional[str] = None
-    footprint_sqm: Optional[float] = None
-    building_lat: Optional[float] = Field(None, ge=-90.0, le=90.0, description="Building centroid latitude (WGS84)")
-    building_lon: Optional[float] = Field(None, ge=-180.0, le=180.0, description="Building centroid longitude (WGS84)")
-    depth_band: Optional[str] = Field(None, description="Rounded depth band for responders, e.g. '~2.6 m (critical, >1.5 m)' - never an exact depth")
-    map_url: Optional[str] = Field(None, description="OpenStreetMap link to the building location")
-    flood_depth_m: float
-    wse_m: float
-    stranded_residents_est: Optional[int] = Field(
-        None, description="Unknown until a population/occupancy dataset is linked; never synthesized"
-    )
-    assigned_unit: str
-    vehicle_type: str
-    evacuation_center: str
-    eta_minutes: int
-    tactical_directive: str
-    generated_by_model: str = "muse-spark-1.1 (Meta API)"
-
+    advisory_level: str = Field(..., description="SEVERE, HIGH, MODERATE, or LOW, from aggregate DEM depth-band counts only")
+    headline: str
+    summary_text: str
+    resident_actions: List[str]
+    responder_actions: List[str] = Field(default_factory=list, description="General area dispatch: staging, road closures, street-by-street sweep. Never a specific house/address.")
+    avoid_actions: List[str] = Field(default_factory=list)
+    evacuation_center_name: str
+    compromised_evac_centers: List[str] = Field(default_factory=list)
+    affected_structures: int = 0
+    critical_depth_count: int = 0
+    medium_depth_count: int = 0
+    low_depth_count: int = 0
+    affected_schools_count: int = 0
+    affected_healthcare_count: int = 0
+    affected_civic_count: int = 0
+    affected_evac_centers_count: int = 0
+    vehicle_selected: str
+    staging_point: str = Field(..., description="General staging point (safe evacuation centre), not a residential address")
+    route_distance_m: float = 0.0
+    eta_minutes: float = 0.0
+    severed_segments_count: int = 0
+    primary_route_severed: bool = False
+    copyable_text: str = Field(..., description="One-paragraph public advisory that can be copied/shared generally")
+    generated_by: str = "rule-based area advisory (DEM aggregate, no per-building dispatch)"
 
 class DispatchTelemetry(BaseModel):
     model_id: str
@@ -197,12 +206,24 @@ class DispatchTelemetry(BaseModel):
     status: str
 
 
+class EvacCenterStatus(BaseModel):
+    name: str
+    lat: float
+    lon: float
+    distance_m: float = Field(..., description="Straight-line distance from the incident target in metres")
+    flooded: bool = Field(..., description="True if the centre point is inside the flood extent or its DEM ground is >=0.05 m below the counted WSE. Flooded centres must never be used.")
+    flood_depth_m: float = Field(0.0, description="WSE minus centre ground elevation, floored at 0")
+    ground_elev_m: float | None = None
+    is_selected: bool = Field(False, description="True for the single centre used for the route, staging, advisory, and map marker")
+
+
 class TriageRouteResponse(BaseModel):
     run_id: str
     barangay: str
     evacuation_center_name: str
     evacuation_center_lat: float
     evacuation_center_lon: float
+    evacuation_centers_status: List[EvacCenterStatus] = Field(default_factory=list, description="Nearest evacuation centres to the target with flooded/dry status at the counted WSE, nearest first. Explains why a nearer flooded centre was skipped for the selected dry one.")
     vehicle_selected: str
     max_passable_depth_m: float
     primary_route_severed: bool
@@ -212,42 +233,10 @@ class TriageRouteResponse(BaseModel):
     route_geojson: Dict[str, Any]
     severed_roads_geojson: Dict[str, Any]
     inundated_structures: InundatedStructureSummary
+    buildings_geojson: Dict[str, Any] = Field(default_factory=lambda: {"type": "FeatureCollection", "features": []}, description="Building footprints coloured by the SAME get_inundated_structures call that produced inundated_structures/area_advisory counts, so map popups and aggregation can never diverge. Step 3 must render this, not the Step 2 projection buildings.")
     agent_steps: List[AgentStepLog]
-    dispatch_tickets: List[DispatchTicket]
+    area_advisory: AreaAdvisory
     dispatch_telemetry: DispatchTelemetry
-
-
-class SurgeSimulationRequest(BaseModel):
-    scenario_id: str = Field("kasiglahan_village", description="Scenario ID")
-    current_depth_m: float = Field(1.35, ge=0.05, le=5.0, description="Current measured depth in meters")
-    surge_delta_m: float = Field(1.5, ge=0.0, le=5.0, description="Additional typhoon surge in meters (+1.5m)")
-    barangay: str = Field("SAN JOSE", description="Barangay name")
-    cam_lat: float = Field(14.7498, ge=-90.0, le=90.0, description="Camera latitude")
-    cam_lon: float = Field(121.1372, ge=-180.0, le=180.0, description="Camera longitude")
-    azimuth_deg: float = Field(118.0, ge=0.0, le=360.0, description="Camera azimuth")
-    fov_deg: float = Field(65.0, ge=10.0, le=120.0, description="Camera FOV")
-    click_u: float = Field(0.52, ge=0.0, le=1.0, description="Horizontal click u")
-    est_distance_m: float = Field(38.0, ge=1.0, le=500.0, description="Distance from camera")
-
-
-class SurgeSimulationResponse(BaseModel):
-    scenario_id: str
-    barangay: str
-    current_depth_m: float
-    projected_surge_depth_m: float
-    current_wse_m: float
-    surge_wse_m: float
-    current_photo_url: str
-    surge_forecast_image_url: str
-    alert_headline: str
-    sms_broadcast_text: str
-    additional_buildings_at_risk: int
-    model_used: str
-    forecast_image_source: str = Field("pil_composite", description="muse_image_generated if the forecast image was generated by muse-image in this call/cache entry, else pil_composite (illustrative PIL composite of the photo)")
-    surge_flood_geojson: Dict[str, Any]
-    cached: bool = False
-    fallback_used: bool = False
-    execution_mode: str = 'live_inference'
 
 
 class ScenarioPreset(BaseModel):

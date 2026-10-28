@@ -5,12 +5,14 @@ import PhotoInspector from "./components/PhotoInspector";
 import MapViewcone from "./components/MapViewcone";
 import TriageCopilot from "./components/TriageCopilot";
 import TriageMap from "./components/TriageMap";
+import { formatNumber } from "./utils/format";
 
 export default function App() {
   const [analysisResult, setAnalysisResult] = useState(null);
   const [customPhotoPreview, setCustomPhotoPreview] = useState(null);
   const [photoUploading, setPhotoUploading] = useState(false);
   const [photoUploadError, setPhotoUploadError] = useState(null);
+  const [geotagNotice, setGeotagNotice] = useState(null);
 
   // Live state from backend
   const [floodProjection, setFloodProjection] = useState(null);
@@ -23,8 +25,6 @@ export default function App() {
   const [triageLoading, setTriageLoading] = useState(false);
   const [triageReused, setTriageReused] = useState(false);
   const [projectionLoading, setProjectionLoading] = useState(false);
-  const [surgeResult, setSurgeResult] = useState(null);
-  const [surgeLoading, setSurgeLoading] = useState(false);
 
   const [cameraParams, setCameraParams] = useState({
     cam_lat: 14.7498,
@@ -190,7 +190,6 @@ export default function App() {
     setFloodProjection(null);
     setTriageData(null);
     setPhotoUploadError(null);
-    setSurgeResult(null);
     try {
       const [bndRes, ecRes] = await Promise.all([
         fetch("/api/v1/boundary"),
@@ -258,7 +257,7 @@ export default function App() {
     if (!file) return;
     setPhotoUploading(true);
     setPhotoUploadError(null);
-    setSurgeResult(null);
+    setGeotagNotice(null);
 
     if (customPhotoPreview && customPhotoPreview.startsWith("blob:")) {
       try {
@@ -296,8 +295,31 @@ export default function App() {
         setFloodProjection(null);
         setTriageData(null);
         setCameraPinPlaced(false);
+        const geo = data.photo_geotag;
+        const useGeo = Boolean(geo && geo.within_pilot_area);
+        if (geo && useGeo) {
+          setGeotagNotice(
+            `Photo GPS found (${Number(geo.lat).toFixed(5)}, ${Number(geo.lon).toFixed(5)}${geo.direction_deg != null ? `, camera direction ${Math.round(geo.direction_deg)} deg` : ""}). Camera pin is pre-placed and the flood projection was generated from it; the Step 2 map flies to that point. Check it in Step 2 - GPS can be off by 5-30 m - and unlock/drag the pin if it looks wrong (moving it re-projects).`
+          );
+          setCameraPinPlaced(true);
+        } else if (geo) {
+          setGeotagNotice(
+            `Photo GPS (${Number(geo.lat).toFixed(5)}, ${Number(geo.lon).toFixed(5)}) is outside the Rodriguez pilot area, so it was not used. Place the camera pin manually in Step 2.`
+          );
+        } else {
+          setGeotagNotice(
+            "No GPS geotag in this photo (common after WhatsApp/Facebook sharing or screenshots). Place the camera pin manually in Step 2."
+          );
+        }
         const nextParams = {
           ...cameraParams,
+          ...(useGeo
+            ? {
+                cam_lat: geo.lat,
+                cam_lon: geo.lon,
+                ...(geo.direction_deg != null ? { azimuth_deg: geo.direction_deg } : {}),
+              }
+            : {}),
           barangay: resolvedBrgy || cameraParams.barangay,
           water_depth_m: data.visual_gauge?.estimated_water_depth_m ?? cameraParams.water_depth_m,
           est_distance_m: data.visual_gauge?.estimated_distance_from_camera_m ?? cameraParams.est_distance_m,
@@ -305,6 +327,11 @@ export default function App() {
           click_v: data.visual_gauge?.recommended_click_v ?? cameraParams.click_v,
         };
         setCameraParams(nextParams);
+        if (useGeo) {
+          // Generate the Step 2 projection from the geotag point right away,
+          // so going to Step 2 shows an updated map, not just a moved pin.
+          runFloodProjection(nextParams);
+        }
       } else {
         setPhotoUploadError(`Upload analysis failed (${res.status}). Using local photo preview.`);
       }
@@ -323,7 +350,7 @@ export default function App() {
     }
     setCustomPhotoPreview(null);
     setPhotoUploadError(null);
-    setSurgeResult(null);
+    setGeotagNotice(null);
 
     const uploadedUrl = analysisResult?.photo_url;
     const isCustom = analysisResult?.is_custom_upload;
@@ -346,41 +373,6 @@ export default function App() {
     setActiveStep(1);
   };
 
-  const handleSimulateSurge = async () => {
-    setSurgeLoading(true);
-    try {
-      const res = await fetch("/api/v1/simulate-surge", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          scenario_id: "live_operator",
-          current_depth_m: cameraParams.water_depth_m,
-          surge_delta_m: 1.5,
-          barangay: cameraParams.barangay,
-          cam_lat: cameraParams.cam_lat,
-          cam_lon: cameraParams.cam_lon,
-          azimuth_deg: cameraParams.azimuth_deg,
-          fov_deg: cameraParams.fov_deg,
-          click_u: cameraParams.click_u,
-          est_distance_m: cameraParams.est_distance_m,
-        }),
-      });
-      if (res.ok) {
-        const data = await res.json();
-        setSurgeResult(data);
-        if (data.surge_flood_geojson) {
-          setFloodProjection((prev) => ({
-            ...prev,
-            flood_geojson: data.surge_flood_geojson,
-            water_surface_elev_m: data.surge_wse_m,
-          }));
-        }
-      }
-    } catch {
-      // Ignore
-    }
-    setSurgeLoading(false);
-  };
 
   const summary = floodProjection?.inundated_structures || {
     barangay: cameraParams.barangay || "SAN JOSE",
@@ -400,7 +392,7 @@ export default function App() {
 
   const floodHectares =
     floodProjection?.flood_area_sqm != null
-      ? (floodProjection.flood_area_sqm / 10000).toFixed(1)
+      ? formatNumber(floodProjection.flood_area_sqm / 10000, 1)
       : "--";
 
   return (
@@ -449,14 +441,14 @@ export default function App() {
           <div className="kpi-cell">
             <span className="kpi-label">Water surface elevation (WSE)</span>
             <div className="kpi-value num">
-              {floodProjection ? floodProjection.water_surface_elev_m.toFixed(2) : "--"}
+              {floodProjection ? formatNumber(floodProjection.water_surface_elev_m, 2) : "--"}
               <span className="kpi-unit">m MSL</span>
             </div>
             <span className="kpi-subtext num">
               {projectionLoading
                 ? "Sampling DEM ground elevation..."
                 : floodProjection
-                ? `DEM ground ${floodProjection.ground_dem_m.toFixed(1)} m + ${cameraParams.water_depth_m.toFixed(2)} m depth`
+                ? `DEM ground ${formatNumber(floodProjection.ground_dem_m, 1)} m + ${formatNumber(cameraParams.water_depth_m, 2)} m depth`
                 : "Standby · Click photo to sample DEM"}
             </span>
           </div>
@@ -464,7 +456,7 @@ export default function App() {
           <div className="kpi-cell">
             <span className="kpi-label">Measured street flood depth</span>
             <div className="kpi-value num">
-              {analysisResult ? cameraParams.water_depth_m.toFixed(2) : "--"}
+              {analysisResult ? formatNumber(cameraParams.water_depth_m, 2) : "--"}
               <span className="kpi-unit">m</span>
             </div>
             <span className="kpi-subtext num" style={{ color: analysisResult ? "var(--positive)" : "var(--muted)", fontWeight: 500 }}>
@@ -484,7 +476,7 @@ export default function App() {
               {projectionLoading
                 ? "Rasterizing DEM fill..."
                 : floodProjection
-                ? `${Math.round(floodProjection.flood_area_sqm).toLocaleString()} m² connected basin`
+                ? `${Number.isFinite(floodProjection.flood_area_sqm) ? Math.round(floodProjection.flood_area_sqm).toLocaleString() : "--"} m² connected basin`
                 : "Awaiting point selection"}
             </span>
           </div>
@@ -520,7 +512,7 @@ export default function App() {
               {triageLoading
                 ? "Computing corridor..."
                 : triageData
-                ? `ETA ${triageData.eta_minutes.toFixed(1)} min · ${(triageData.vehicle_selected || "amphibious_boat").replace(/_/g, " ")}`
+                ? `ETA ${formatNumber(triageData.eta_minutes, 1)} min · ${(triageData.vehicle_selected || "amphibious_boat").replace(/_/g, " ")}`
                 : "No corridor active"}
             </span>
           </div>
@@ -553,7 +545,7 @@ export default function App() {
               </div>
               <span className="pipeline-step-desc">
                 {analysisResult
-                  ? `Target u=${cameraParams.click_u.toFixed(2)} · ${cameraParams.water_depth_m.toFixed(2)}m water depth`
+                  ? `Target u=${formatNumber(cameraParams.click_u, 2)} · ${formatNumber(cameraParams.water_depth_m, 2)}m water depth`
                   : "Upload a street flood photo to begin"}
               </span>
             </div>
@@ -578,7 +570,7 @@ export default function App() {
               </div>
               <span className="pipeline-step-desc">
                 {floodProjection
-                  ? `Azimuth ${cameraParams.azimuth_deg}° · FOV ${cameraParams.fov_deg}° · WSE ${floodProjection.water_surface_elev_m.toFixed(2)}m MSL`
+                  ? `Azimuth ${cameraParams.azimuth_deg}° · FOV ${cameraParams.fov_deg}° · WSE ${formatNumber(floodProjection.water_surface_elev_m, 2)}m MSL`
                   : "Rotate azimuth & FOV down street to cast DEM ray"}
               </span>
             </div>
@@ -595,16 +587,16 @@ export default function App() {
             >
               <div className="pipeline-step-header">
                 <span className="pipeline-step-title">
-                  03 · Agent Triage & Dispatch
+                  03 · Agent Triage & Advisory
                 </span>
                 <span className={`status-pill ${triageData ? "positive" : "neutral"}`} style={{ height: "18px", fontSize: "10.5px" }}>
-                  {triageData ? "Dispatched" : "Step 3"}
+                  {triageData ? "Advisory ready" : "Step 3"}
                 </span>
               </div>
               <span className="pipeline-step-desc">
                 {triageData
-                  ? `Corridor active (${Math.round(triageData.route_distance_m)}m) · ${triageData.dispatch_tickets?.length || 0} tickets`
-                  : "Sever flooded road network & queue tickets"}
+                  ? `Corridor active (${Math.round(triageData.route_distance_m)}m) · ${triageData.area_advisory ? `${triageData.area_advisory.advisory_level} advisory` : "advisory"}`
+                  : "Sever flooded road network & issue area advisory"}
               </span>
             </div>
           </div>
@@ -623,17 +615,15 @@ export default function App() {
             customPhotoPreview={customPhotoPreview}
             onDeleteCustomPhoto={handleDeleteCustomPhoto}
             onResetCustomPhoto={handleDeleteCustomPhoto}
-            onSimulateSurge={handleSimulateSurge}
-            surgeResult={surgeResult}
-            surgeLoading={surgeLoading}
             floodProjection={floodProjection}
             projectionLoading={projectionLoading}
+            geotagNotice={geotagNotice}
           />
 
           <div className="step-advance-bar" style={{ padding: "12px 16px" }}>
             <span style={{ color: "var(--muted)", fontSize: "13px" }}>
               {analysisResult
-                ? `Photo calibrated (u=${cameraParams.click_u.toFixed(2)}, depth=${cameraParams.water_depth_m.toFixed(2)}m). Ready to align viewcone on 3D map.`
+                ? `Photo calibrated (u=${formatNumber(cameraParams.click_u, 2)}, depth=${formatNumber(cameraParams.water_depth_m, 2)}m). Ready to align viewcone on 3D map.`
                 : "Awaiting photo input. Upload a street flood photo above to begin."}
             </span>
             <button
@@ -675,7 +665,7 @@ export default function App() {
             </button>
             <span style={{ color: "var(--muted)", fontSize: "13px" }}>
               {floodProjection
-                ? `WSE at ${floodProjection.water_surface_elev_m.toFixed(2)} m MSL submerges ${summary.affected_structures} structures. Ready to dispatch rescue.`
+                ? `WSE at ${formatNumber(floodProjection.water_surface_elev_m, 2)} m MSL submerges ${summary.affected_structures} structures. Ready to dispatch rescue.`
                 : cameraPinPlaced
                 ? "3D topographic viewcone calculated. Ready to dispatch."
                 : "Point or confirm camera pin location on map to calculate 3D flood."}
@@ -687,7 +677,7 @@ export default function App() {
               onClick={() => handleGoToStep(3)}
               style={{ fontSize: "13px", height: "32px", padding: "0 14px" }}
             >
-              <span>Proceed to Step 3: Agent Triage & Dispatch →</span>
+              <span>Proceed to Step 3: Agent Triage & Advisory →</span>
             </button>
           </div>
         </div>
@@ -729,10 +719,10 @@ export default function App() {
               <RefreshCw size={32} className="spin" color="var(--accent)" />
               <div>
                 <h3 style={{ margin: "0 0 6px 0", fontSize: "16px", fontWeight: 600, color: "var(--text)" }}>
-                  Triggering Autonomous Agent Triage & Dispatch...
+                  Triggering Autonomous Agent Triage & Advisory...
                 </h3>
                 <p style={{ margin: 0, fontSize: "13px", color: "var(--muted)", maxWidth: "560px", lineHeight: 1.45 }}>
-                  Loading the Rodriguez road network graph, clipping road segments whose DEM flood depth exceeds the vehicle limit, computing the shortest safe corridor to the nearest evacuation center, and preparing building dispatch tickets.
+                  Loading the Rodriguez road network graph, clipping road segments whose DEM flood depth exceeds the vehicle limit, computing the shortest safe corridor to the nearest evacuation center, and preparing a general barangay advisory (no per-house dispatch).
                 </p>
               </div>
               <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", justifyContent: "center" }}>
@@ -778,7 +768,7 @@ export default function App() {
             <div style={{ display: "flex", flexDirection: "column", gap: "2px" }}>
               <span style={{ color: "var(--text)", fontSize: "12.5px", fontWeight: 500 }}>
                 {triageData
-                  ? `Corridor active: ${Math.round(triageData.route_distance_m)} m to ${triageData.evacuation_center_name || "Evacuation Center"} · ${triageData.dispatch_tickets?.length || 0} tickets queued`
+                  ? `Corridor active: ${Math.round(triageData.route_distance_m)} m to ${triageData.evacuation_center_name || "Evacuation Center"} · ${triageData.area_advisory ? `${triageData.area_advisory.advisory_level} area advisory ready` : "advisory ready"}`
                   : "Computing autonomous triage..."}
               </span>
               <span style={{ color: "var(--muted)", fontSize: "11px" }}>

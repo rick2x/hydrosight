@@ -22,6 +22,7 @@ import geopandas as gpd
 import httpx
 import numpy as np
 from PIL import Image, ImageDraw
+from PIL.ExifTags import GPSTAGS
 
 from backend.geo_engine import (
     DEFAULT_DEM_PATH,
@@ -38,12 +39,13 @@ from backend.geo_engine import (
 from backend.schemas import (
     AgentStepLog,
     AnalyzePhotoResponse,
-    DispatchTicket,
+    AreaAdvisory,
     InundatedStructureSummary,
     DispatchTelemetry,
+    EvacCenterStatus,
+    PhotoGeotag,
     SAMMaskObject,
     ScenarioPreset,
-    SurgeSimulationResponse,
     TriageRouteRequest,
     TriageRouteResponse,
     VisualGaugeResult,
@@ -58,6 +60,11 @@ DISPATCH_LOG_PATH = OUTPUTS_DIR / "dispatch_telemetry.log"
 META_API_KEY = os.environ.get("META_API_KEY", "")
 META_API_BASE_URL = os.environ.get("META_API_BASE_URL", "https://api.meta.ai/v1")
 AGENT_DISPATCH_PROVIDER = os.environ.get("AGENT_DISPATCH_PROVIDER", "Meta AI API")
+
+# Meta API response caching is disabled by default: every analyze-photo,
+# triage call runs fresh against the live models. Set
+# HYDROSIGHT_CACHE_ENABLED=1 only for offline development against old runs.
+CACHE_ENABLED = os.environ.get("HYDROSIGHT_CACHE_ENABLED", "0").strip().lower() in ("1", "true", "yes")
 
 PRIMARY_SAM_PROMPTS = [
     "water",
@@ -97,6 +104,8 @@ def _get_cache_path(payload: Dict[str, Any]) -> Tuple[str, Path]:
 
 
 def _read_cache(payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    if not CACHE_ENABLED:
+        return None
     _, path = _get_cache_path(payload)
     if path.exists():
         try:
@@ -107,6 +116,8 @@ def _read_cache(payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
 
 
 def _write_cache(payload: Dict[str, Any], response_data: Dict[str, Any]) -> str:
+    if not CACHE_ENABLED:
+        return ""
     digest, path = _get_cache_path(payload)
     path.write_text(json.dumps(response_data, indent=2), encoding="utf-8")
     return digest
@@ -604,38 +615,6 @@ SCENARIO_PRESETS: Dict[str, ScenarioPreset] = {
 }
 
 
-def _apply_realistic_photo_surge(source_path: Path, out_path: Path, surge_water_y: float = 0.38) -> None:
-    """
-    Applies realistic flood surge water rise onto the REAL photograph,
-    preserving photorealism and avoiding synthetic cartoon drawings.
-    """
-    import shutil
-    try:
-        base = Image.open(source_path).convert("RGBA")
-        w, h = base.size
-        surge_layer = Image.new("RGBA", (w, h), (0, 0, 0, 0))
-        draw = ImageDraw.Draw(surge_layer, "RGBA")
-
-        water_y = int(h * surge_water_y)
-        # Realistic muddy brown floodwater blending with surface reflection
-        for y in range(water_y, h):
-            frac = (y - water_y) / max(1, h - water_y)
-            alpha = int(140 + 75 * frac)
-            r = int(112 - 20 * frac)
-            g = int(88 - 18 * frac)
-            b = int(66 - 15 * frac)
-            draw.line([(0, y), (w, y)], fill=(r, g, b, alpha))
-
-        # Meniscus water line
-        draw.line([(0, water_y), (w, water_y)], fill=(195, 175, 150, 180), width=2)
-        draw.line([(0, water_y + 1), (w, water_y + 1)], fill=(70, 52, 38, 140), width=1)
-
-        merged = Image.alpha_composite(base, surge_layer).convert("RGB")
-        merged.save(out_path, "JPEG", quality=92)
-    except Exception:
-        # If processing fails, copy original photo
-        shutil.copy2(source_path, out_path)
-
 
 def ensure_sample_photos() -> None:
     """
@@ -658,7 +637,6 @@ def ensure_sample_photos() -> None:
 
     for scen_id in SCENARIO_PRESETS:
         normal_path = PHOTOS_DIR / f"{scen_id}.jpg"
-        surge_path = PHOTOS_DIR / f"{scen_id}_surge.jpg"
 
         # Ensure normal photo is a real photograph
         if not normal_path.exists() or normal_path.stat().st_size < 40000:
@@ -669,10 +647,6 @@ def ensure_sample_photos() -> None:
             if donor_path and donor_path.exists():
                 shutil.copy2(donor_path, normal_path)
 
-        # Ensure surge photo is created from the real photo
-        if not surge_path.exists() or surge_path.stat().st_size < 40000:
-            if normal_path.exists():
-                _apply_realistic_photo_surge(normal_path, surge_path, surge_water_y=0.36)
 
 
 def get_scenarios() -> List[ScenarioPreset]:
@@ -1180,10 +1154,86 @@ def call_muse_spark_visual_gauge(
     return preset.visual_gauge, True, False
 
 
+def extract_exif_geotag(raw_bytes: bytes) -> Optional[PhotoGeotag]:
+    """Read GPS coordinates (and camera direction, if present) from EXIF.
+
+    Must be called on the RAW upload bytes: the stored copy is re-saved as a
+    plain RGB JPEG with EXIF stripped (privacy), so geotags only exist here.
+    Returns None when the photo has no usable GPS EXIF, which is common for
+    screenshots and photos forwarded through WhatsApp/Facebook/messengers.
+    A geotag is a placement hint, never proof: callers must let the operator
+    confirm or drag the pin before projecting.
+    """
+    try:
+        with Image.open(io.BytesIO(raw_bytes)) as im:
+            exif = im.getexif()
+            if not exif:
+                return None
+            try:
+                gps = exif.get_ifd(0x8825)  # GPSInfo IFD
+            except Exception:
+                gps = {}
+            if not gps:
+                return None
+            # Normalise tag ids to GPS tag names where possible.
+            named: Dict[str, Any] = {}
+            for tag_id, value in gps.items():
+                named[GPSTAGS.get(tag_id, str(tag_id))] = value
+
+            def _dms_to_degrees(dms, ref) -> Optional[float]:
+                try:
+                    parts = [float(p) for p in dms]
+                except Exception:
+                    return None
+                if len(parts) != 3:
+                    return None
+                deg = parts[0] + parts[1] / 60.0 + parts[2] / 3600.0
+                if str(ref).upper() in ("S", "W"):
+                    deg = -deg
+                return deg
+
+            lat = _dms_to_degrees(named.get("GPSLatitude"), named.get("GPSLatitudeRef"))
+            lon = _dms_to_degrees(named.get("GPSLongitude"), named.get("GPSLongitudeRef"))
+            if lat is None or lon is None or not (-90.0 <= lat <= 90.0 and -180.0 <= lon <= 180.0):
+                return None
+            if abs(lat) < 0.01 and abs(lon) < 0.01:
+                return None  # Null-island placeholder, not a real fix.
+
+            direction = named.get("GPSImgDirection")
+            try:
+                direction_deg = float(direction) % 360.0 if direction is not None else None
+            except Exception:
+                direction_deg = None
+            altitude = named.get("GPSAltitude")
+            try:
+                altitude_m = float(altitude) if altitude is not None else None
+            except Exception:
+                altitude_m = None
+
+            within = 14.69 <= lat <= 14.89 and 121.10 <= lon <= 121.35
+            note = (
+                "EXIF GPS pre-places the camera pin. GPS accuracy is typically 5-30 m, so confirm or drag the pin in Step 2 before projecting."
+                if within
+                else "EXIF GPS is outside the Rodriguez pilot area, so it was NOT used to place the pin. Place the pin manually in Step 2."
+            )
+            return PhotoGeotag(
+                lat=round(lat, 6),
+                lon=round(lon, 6),
+                source="exif_gps",
+                direction_deg=(round(direction_deg, 1) if direction_deg is not None else None),
+                altitude_m=(round(altitude_m, 1) if altitude_m is not None else None),
+                within_pilot_area=within,
+                note=note,
+            )
+    except Exception:
+        return None
+
+
 def analyze_water_level_with_sam3(
     scenario_id: str = "kasiglahan_village",
     uploaded_image_path: Optional[Path] = None,
     force_low_confidence_check: bool = False,
+    photo_geotag: Optional[PhotoGeotag] = None,
 ) -> AnalyzePhotoResponse:
     """
     Runs Stage 1: Visual Depth Gauge (`sam-3.1` + `muse-spark-1.3`).
@@ -1257,6 +1307,7 @@ def analyze_water_level_with_sam3(
         fallback_used=is_fallback,
         execution_mode=mode,
         is_custom_upload=is_custom,
+        photo_geotag=photo_geotag if is_custom else None,
     )
 
 
@@ -1272,249 +1323,146 @@ def _map_url(lat: float, lon: float) -> str:
     return f"https://www.openstreetmap.org/?mlat={lat:.6f}&mlon={lon:.6f}#map=18/{lat:.6f}/{lon:.6f}"
 
 
-def _ticket_estimate_suffix(depth_m: float, lat=None, lon=None) -> str:
-    loc = ""
-    if lat is not None and lon is not None:
-        loc = f" Location: {float(lat):.6f}, {float(lon):.6f} {_map_url(float(lat), float(lon))}"
-    return (
-        f" [Model estimate: {_depth_band_text(depth_m)} ground-level depth at the building "
-        f"footprint, uncertainty at least +/-0.5 m from the DEM - verify on arrival.{loc}]"
-    )
-
-
-def _align_directive_eta(directive: str, eta_minutes: int) -> str:
-    """Rewrite any ETA stated inside a directive ("5-minute ETA", "ETA 5
-    minutes", "ETA of 5 min") to the ticket's own eta_minutes value."""
-    out = re.sub(
-        r"\d+(?:\.\d+)?\s*-\s*minute\s+ETA",
-        f"{eta_minutes}-minute ETA",
-        directive,
-        flags=re.IGNORECASE,
-    )
-    out = re.sub(
-        r"ETA\s*(?:of\s*)?\d+(?:\.\d+)?\s*minutes?",
-        f"ETA {eta_minutes} minutes",
-        out,
-        flags=re.IGNORECASE,
-    )
-    return out
-
-
-def generate_dispatch_tickets(
+def generate_area_advisory(
     barangay: str,
-    wse_m: float,
-    water_depth_m: float,
+    summary: InundatedStructureSummary,
     evacuation_center: str,
     vehicle_type: str,
     eta_minutes: float,
-    critical_buildings: List[Dict[str, Any]],
-) -> Tuple[List[DispatchTicket], DispatchTelemetry]:
+    route_distance_m: float,
+    severed_segments_count: int,
+    primary_route_severed: bool,
+) -> Tuple["AreaAdvisory", DispatchTelemetry]:
+    """General barangay-level flood advisory. Deliberately NOT per-building:
+    no house, building_id, address, or occupant is targeted. Responders are
+    staged to the area (safe evacuation centre) and sweep generally; residents
+    get what-to-do guidance derived only from aggregate DEM depth-band counts.
     """
-    Formats priority rescue tickets for the deepest real OSM footprints (Buildings.shp).
-    Occupant counts are intentionally NOT produced: no population/occupancy layer is
-    linked, so stranded_residents_est stays None and directives call for a door-to-door
-    headcount instead of inventing a number.
-    """
+    from backend.schemas import AreaAdvisory
+
     t0 = time.perf_counter()
-    bldg_summary = [
-        {
-            "building_id": str(b.get("building_id", "OSM-unknown")),
-            "building_name": (b.get("building_name") or "").strip() or None,
-            "building_type": (b.get("building_type") or "building"),
-            "infra_category": str(b.get("infra_category") or "residential"),
-            "is_evac_center": bool(b.get("is_evac_center", False)),
-            "evac_center_name": (b.get("evac_center_name") or "").strip() or None,
-            "footprint_sqm": round(float(b.get("footprint_sqm") or 0.0), 1),
-            "flood_depth_m": round(float(b.get("flood_depth_m", water_depth_m)), 2),
-            "building_lat": (round(float(b["building_lat"]), 6) if b.get("building_lat") is not None else None),
-            "building_lon": (round(float(b["building_lon"]), 6) if b.get("building_lon") is not None else None),
-            "depth_band": _depth_band_text(float(b.get("flood_depth_m", water_depth_m))),
-        }
-        for b in critical_buildings[:3]
+    critical = int(summary.critical_depth_count)
+    medium = int(summary.medium_depth_count)
+    low = int(summary.low_depth_count)
+    affected = int(summary.affected_structures)
+    compromised = list(summary.compromised_evac_centers or [])
+
+    if critical > 0 or compromised:
+        level = "SEVERE"
+        headline = f"Evacuate low-lying parts of Brgy. {barangay.title()} now"
+    elif medium > 0:
+        level = "HIGH"
+        headline = f"Be ready to evacuate in Brgy. {barangay.title()}; avoid flooded streets"
+    elif affected > 0:
+        level = "MODERATE"
+        headline = f"Localised flooding in Brgy. {barangay.title()}; take care on flooded streets"
+    else:
+        level = "LOW"
+        headline = f"No DEM flood impact detected for Brgy. {barangay.title()} at this water level"
+
+    summary_text = (
+        f"{affected} structure(s) in the DEM flood extent around Brgy. {barangay.title()} (footprints just across a barangay boundary are included, so a building popup may name a neighbouring barangay): "
+        f"{critical} critical (>1.5 m), {medium} medium (0.5-1.5 m), {low} low (<0.5 m). "
+        f"Counts are aggregate building-footprint counts only; occupancy is unknown, so no "
+        f"house-by-house rescue list is issued."
+    )
+    if summary.affected_schools_count or summary.affected_healthcare_count or summary.affected_civic_count:
+        summary_text += (
+            f" Affected facilities (aggregate): {summary.affected_schools_count} school(s), "
+            f"{summary.affected_healthcare_count} health facility(ies), {summary.affected_civic_count} civic building(s)."
+        )
+
+    resident_actions: List[str] = []
+    if level in ("SEVERE", "HIGH"):
+        resident_actions.append(
+            f"If your street is in a medium or critical zone on the map (about 0.5 m or deeper), move to an upper floor or go to {evacuation_center} now. Do not wait for water to enter your home."
+        )
+    elif level == "MODERATE":
+        resident_actions.append(
+            f"Stay alert and be ready to move to an upper floor or to {evacuation_center} if water rises or enters your home."
+        )
+    else:
+        resident_actions.append("No evacuation is indicated by this projection. Keep monitoring official barangay/MDRRMO updates.")
+    resident_actions += [
+        "Do not walk, cycle, or drive through floodwater 0.5 m or deeper; depth and current are hard to judge and open drains may be hidden.",
+        "Keep children and older people away from floodwater, and do not let anyone wade to fetch belongings.",
+        "If water enters your home, switch off electricity at the main breaker if it is safe and dry to reach, and move documents, medicines, and phones to a high place.",
+        f"Help neighbours who may need assistance getting to {evacuation_center}, and report anyone trapped or missing to the barangay/MDRRMO so responders can sweep the area generally.",
     ]
 
-    tokens_used = 0
-    tickets: List[DispatchTicket] = []
-    if not bldg_summary:
-        telemetry = log_dispatch_inference(
-            model_id="muse-spark-1.1 (Meta API)",
-            provider=f"{AGENT_DISPATCH_PROVIDER} [skipped: no affected footprints]",
-            latency_ms=max(1, int((time.perf_counter() - t0) * 1000)),
-            tokens=0,
+    responder_actions: List[str] = [
+        f"Stage {vehicle_type} and crews at {evacuation_center} as the area staging point. Do not dispatch to individual house addresses from this system.",
+        f"Use the computed safe corridor for area access ({route_distance_m:.0f} m, about {eta_minutes:.0f} min). Guard or close the {severed_segments_count} flooded road segment(s) shown on the severed-roads layer.",
+        "Sweep the medium and critical zones street by street, conduct headcounts on site, and prioritise areas by observed conditions on the ground, not by a generated address list.",
+    ]
+    if primary_route_severed:
+        responder_actions.append("The primary wheeled route is severed by deep water; use the amphibious/alternate corridor selected by the router and re-check passability on arrival.")
+    if compromised:
+        responder_actions.append(
+            f"Do NOT send evacuees to compromised centre(s): {', '.join(compromised)}. Redirect everyone to {evacuation_center}."
         )
-        return tickets, telemetry
+    if summary.affected_healthcare_count:
+        responder_actions.append("Check on affected health facilities as an area priority and arrange transfer support if staff request it; do not assume patient numbers.")
+    if summary.affected_schools_count:
+        responder_actions.append("Check affected schools generally for people sheltering there; confirm with school/barangay officials on site.")
 
-    cache_payload = {
-        "endpoint": "dispatch-tickets-v3",
-        "barangay": barangay,
-        "wse_m": round(wse_m, 2),
-        "vehicle_type": vehicle_type,
-        "evacuation_center": evacuation_center,
-        "eta_minutes": int(round(eta_minutes)),
-        "buildings": bldg_summary,
-    }
-    cached = _read_cache(cache_payload)
-    if cached is not None:
-        _cached_live = bool(cached.get("formatter_live", False))
-        telemetry = log_dispatch_inference(
-            model_id="muse-spark-1.1 (Meta API)" if _cached_live else "rule-based formatter",
-            provider=(f"{AGENT_DISPATCH_PROVIDER} [SHA256 Cache Hit]" if _cached_live else "rule-based formatter (cached)"),
-            latency_ms=max(1, int((time.perf_counter() - t0) * 1000)),
-            tokens=cached.get("tokens_used", 0),
-        )
-        cached_tickets = [DispatchTicket(**t) for t in cached["tickets"]]
-        for _ct in cached_tickets:
-            _ct.tactical_directive = _align_directive_eta(_ct.tactical_directive, int(_ct.eta_minutes))
-            if not _ct.depth_band:
-                _ct.depth_band = _depth_band_text(_ct.flood_depth_m)
-            if _ct.building_lat is not None and _ct.building_lon is not None and not _ct.map_url:
-                _ct.map_url = _map_url(float(_ct.building_lat), float(_ct.building_lon))
-            if "verify on arrival" not in _ct.tactical_directive.lower():
-                _ct.tactical_directive = _ct.tactical_directive.rstrip() + _ticket_estimate_suffix(
-                    _ct.flood_depth_m, _ct.building_lat, _ct.building_lon
-                )
-        return cached_tickets, telemetry
+    avoid_actions: List[str] = [
+        "Do not treat this advisory as a rescue order for any specific house; no per-address dispatch is generated.",
+        "Do not rely on exact depths at a single building; depths are DEM model estimates and must be verified on the ground.",
+        "Do not enter fast-moving or unknown-depth water to attempt a rescue without proper equipment and a team.",
+    ]
 
-    prompt = (
-        "You are the HydroSight incident formatter for Rodriguez MDRRMO. "
-        "Return JSON {\"tickets\": [...]} with one entry per target building, in the same order. "
-        "Each entry: cluster_name (short sector label), tactical_directive (one sentence). "
-        "Use the depth_band wording for depth, never an exact depth figure. "
-        "Do NOT state or estimate the number of occupants/residents; occupancy is unknown. "
-        "Instead instruct the team to conduct a headcount on arrival."
+    copyable_text = (
+        f"[Brgy. {barangay.title()} FLOOD ADVISORY - {level}] {headline}. "
+        f"{affected} structure(s) in the modelled flood extent ({critical} critical >1.5 m, {medium} medium 0.5-1.5 m, {low} low <0.5 m). "
+        f"Go to / staging point: {evacuation_center}. Do not cross floodwater 0.5 m or deeper. "
+        f"This is a DEM model estimate for general guidance, not an official flood map; follow barangay/MDRRMO instructions."
     )
-    user_input = json.dumps(
-        {
-            "barangay": barangay,
-            "wse_m": round(wse_m, 2),
-            "vehicle_type": vehicle_type,
-            "evacuation_center": evacuation_center,
-            "eta_minutes": int(round(eta_minutes)),
-            "target_buildings": bldg_summary,
-        }
+    if compromised:
+        copyable_text += f" Do NOT go to compromised centre(s): {', '.join(compromised)}."
+
+    advisory = AreaAdvisory(
+        barangay=barangay,
+        advisory_level=level,
+        headline=headline,
+        summary_text=summary_text,
+        resident_actions=resident_actions,
+        responder_actions=responder_actions,
+        avoid_actions=avoid_actions,
+        evacuation_center_name=evacuation_center,
+        compromised_evac_centers=compromised,
+        affected_structures=affected,
+        critical_depth_count=critical,
+        medium_depth_count=medium,
+        low_depth_count=low,
+        affected_schools_count=int(summary.affected_schools_count),
+        affected_healthcare_count=int(summary.affected_healthcare_count),
+        affected_civic_count=int(summary.affected_civic_count),
+        affected_evac_centers_count=int(summary.affected_evac_centers_count),
+        vehicle_selected=vehicle_type,
+        staging_point=evacuation_center,
+        route_distance_m=round(float(route_distance_m), 1),
+        eta_minutes=round(float(eta_minutes), 1),
+        severed_segments_count=int(severed_segments_count),
+        primary_route_severed=bool(primary_route_severed),
+        copyable_text=copyable_text,
+        generated_by="rule-based area advisory (DEM aggregate, no per-building dispatch)",
     )
-
-    llm_items: List[Dict[str, Any]] = []
-    formatter_live = False
-    try:
-        with httpx.Client(timeout=16.0) as client:
-            resp = client.post(
-                f"{META_API_BASE_URL}/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {META_API_KEY}",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "model": "muse-spark-1.1",
-                    "messages": [
-                        {"role": "system", "content": prompt},
-                        {"role": "user", "content": user_input},
-                    ],
-                    "response_format": {"type": "json_object"},
-                    "temperature": 0.1,
-                },
-            )
-            if resp.status_code == 200:
-                body = resp.json()
-                tokens_used = int(body.get("usage", {}).get("total_tokens", 0))
-                llm_items = json.loads(body["choices"][0]["message"]["content"]).get("tickets", []) or []
-                formatter_live = bool(llm_items)
-    except Exception:
-        llm_items = []
-
-    for idx, b in enumerate(bldg_summary):
-        depth_val = float(b["flood_depth_m"])
-        label = b["building_name"] or f"{str(b['building_type']).title()} {b['building_id']}"
-        is_evac = bool(b.get("is_evac_center", False))
-        evac_n = b.get("evac_center_name")
-        cat = str(b.get("infra_category", "residential"))
-
-        if is_evac:
-            default_directive = (
-                f"CRITICAL EVACUATION CENTER BREACH: Designated evacuation center '{evac_n or label}' is submerged "
-                f"under {_depth_band_text(depth_val)} of floodwater (model estimate)! Re-route all evacuees immediately away from this site to {evacuation_center}."
-            )
-            prio = "CRITICAL"
-        elif cat == "healthcare":
-            default_directive = (
-                f"HEALTHCARE FACILITY PRIORITY: {label} has {_depth_band_text(depth_val)} ground-level flood depth (model estimate). "
-                f"Conduct immediate patient extraction, safeguard critical emergency equipment, and transfer to {evacuation_center}."
-            )
-            prio = "CRITICAL"
-        elif cat == "education":
-            default_directive = (
-                f"EDUCATIONAL INSTITUTION: {label} has {_depth_band_text(depth_val)} ground-level flood depth (model estimate). "
-                f"Verify if community members or stranded evacuees are inside; conduct headcount on arrival and transport to {evacuation_center}."
-            )
-            prio = "CRITICAL" if depth_val >= 1.0 else "HIGH"
-        elif cat == "emergency_civic":
-            default_directive = (
-                f"CIVIC & GOVERNMENT INFRASTRUCTURE: {label} submerged at {_depth_band_text(depth_val)} ground-level depth (model estimate). "
-                f"Deploy search-and-rescue team for stranded personnel and document facility damage."
-            )
-            prio = "CRITICAL" if depth_val >= 1.0 else "HIGH"
-        else:
-            default_directive = (
-                f"Flood depth {_depth_band_text(depth_val)} (model estimate) at {label} ({b['footprint_sqm']:.0f} m\u00b2 footprint). "
-                f"Occupancy unknown \u2014 conduct headcount on arrival and evacuate to {evacuation_center}."
-            )
-            prio = "CRITICAL" if depth_val > 1.5 else ("HIGH" if depth_val >= 0.5 else "MEDIUM")
-
-        item = llm_items[idx] if idx < len(llm_items) and isinstance(llm_items[idx], dict) else {}
-        directive = str(item.get("tactical_directive") or default_directive)
-        # The ticket's ETA field is eta_minutes staggered per ticket; any ETA
-        # mentioned inside the directive text must be that same value, not
-        # the single route ETA the formatter was given.
-        _ticket_eta = max(1, int(round(eta_minutes)) + idx * 2)
-        directive = _align_directive_eta(directive, _ticket_eta)
-        if "verify on arrival" not in directive.lower():
-            directive = directive.rstrip() + _ticket_estimate_suffix(depth_val, b.get("building_lat"), b.get("building_lon"))
-        tickets.append(
-            DispatchTicket(
-                ticket_id=f"MDRRMO-2026-{104 + idx}",
-                priority=prio,
-                barangay=barangay,
-                cluster_name=str(item.get("cluster_name") or f"Brgy. {barangay.title()} Flood Zone {idx + 1}"),
-                building_id=b["building_id"],
-                building_name=b["building_name"],
-                building_type=b["building_type"],
-                infra_category=cat,
-                is_evac_center=is_evac,
-                evac_center_name=evac_n,
-                footprint_sqm=b["footprint_sqm"],
-                building_lat=b.get("building_lat"),
-                building_lon=b.get("building_lon"),
-                depth_band=_depth_band_text(depth_val),
-                map_url=(_map_url(float(b["building_lat"]), float(b["building_lon"])) if b.get("building_lat") is not None and b.get("building_lon") is not None else None),
-                flood_depth_m=round(depth_val, 2),
-                wse_m=round(wse_m, 2),
-                stranded_residents_est=None,
-                assigned_unit=f"RODRIGUEZ-SAR-0{idx + 1}",
-                vehicle_type=vehicle_type,
-                evacuation_center=evacuation_center,
-                eta_minutes=_ticket_eta,
-                tactical_directive=directive,
-                generated_by_model="muse-spark-1.1 (Meta API)" if item else "rule-based formatter",
-            )
-        )
-
-    latency_ms = max(1, int((time.perf_counter() - t0) * 1000))
-    _write_cache(cache_payload, {"tickets": [t.model_dump() for t in tickets], "tokens_used": tokens_used, "formatter_live": formatter_live})
     telemetry = log_dispatch_inference(
-        model_id="muse-spark-1.1 (Meta API)" if formatter_live else "rule-based formatter",
-        provider=AGENT_DISPATCH_PROVIDER if formatter_live else "rule-based formatter (live API unavailable)",
-        latency_ms=latency_ms,
-        tokens=tokens_used,
+        model_id="rule-based area advisory",
+        provider="HydroSight deterministic advisory (aggregate DEM counts, no LLM, no per-building tickets)",
+        latency_ms=max(1, int((time.perf_counter() - t0) * 1000)),
+        tokens=0,
+        task="area_advisory_generation",
     )
-    return tickets, telemetry
-
+    return advisory, telemetry
 
 
 
 # ---------------------------------------------------------------------------
 # Muse Spark Spatial Commander: real function-calling over the deterministic
 # HydroSight tools. The model chooses arguments (evacuation centre, vehicle,
-# passable depth, retry, ticket buildings); Python executes and validates.
+# passable depth, retry, general advisory); Python executes and validates.
 # Tool results are returned to the model as JSON strings. Every validation
 # failure is an informative error object the model can correct, never a
 # silent fallback. If the commander does not complete, triage falls back to
@@ -1567,15 +1515,13 @@ def _commander_tools() -> List[Dict[str, Any]]:
                 "vehicle_type": dict(vehicle),
             }}}},
         {"type": "function", "function": {
-            "name": "generate_dispatch_ticket",
-            "description": ("Generates responder-ready rescue dispatch tickets for the buildings you select by building_id (choose the "
-                            "deepest / most critical ones from get_inundated_structures, at most 3). Tickets carry banded depth, "
-                            "coordinates, a map link and a verify-on-arrival instruction; occupants are never invented. Call "
-                            "get_inundated_structures first so you can pass real building_ids. This ends the mission."),
+            "name": "generate_area_advisory",
+            "description": ("Generates ONE general barangay-level flood advisory from aggregate inundation counts: what residents "
+                            "should do, where the general staging point is, and which roads to avoid. It never targets a specific "
+                            "house, building_id, or address, and never invents occupants. Call get_inundated_structures first. This ends the mission."),
             "parameters": {"type": "object", "additionalProperties": False,
-                           "required": ["building_ids", "evacuation_center", "vehicle_type"], "properties": {
-                "building_ids": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 3, "description": "building_id values copied exactly from get_inundated_structures critical_buildings, e.g. ['OSM-894973558']."},
-                "evacuation_center": {"type": "string", "description": "Exact name of the evacuation centre you chose from list_evacuation_centers, e.g. Burgos National High School - Main."},
+                           "required": ["evacuation_center", "vehicle_type"], "properties": {
+                "evacuation_center": {"type": "string", "description": "Exact name of the dry evacuation centre you chose from list_evacuation_centers, used as the general staging point."},
                 "vehicle_type": dict(vehicle),
             }}}},
     ]
@@ -1594,11 +1540,11 @@ def _run_spark_commander(
     fallback_evac_lon: float,
 ) -> Optional[Dict[str, Any]]:
     """Drive steps 2-4 by Muse Spark tool-calling. Returns commander state
-    (inundation, routes, tickets, trace) or None to fall back deterministically."""
+    (inundation, routes, advisory, trace) or None to fall back deterministically."""
     if not META_API_KEY:
         return None
 
-    state: Dict[str, Any] = {"routes": [], "trace": [], "tickets": None, "inundation": None,
+    state: Dict[str, Any] = {"routes": [], "trace": [], "advisory": None, "inundation": None,
                              "evac_name": fallback_evac_name, "evac_lat": fallback_evac_lat, "evac_lon": fallback_evac_lon}
 
     # Flood status of every centre at this WSE/extent, computed once.
@@ -1643,6 +1589,11 @@ def _run_spark_commander(
         if not isinstance(wse, (int, float)) or not (-100 <= float(wse) <= 9000):
             return _tool_error("validation_error", "wse_m must be a number between -100 and 9000 (metres above sea level).",
                                [f"Use the effective WSE from the incident context: {effective_wse_m}"])
+        if abs(float(wse) - float(effective_wse_m)) > 0.02:
+            return _tool_error("validation_error",
+                               f"wse_m {float(wse):.2f} does not match the incident effective WSE {effective_wse_m:.2f} m. "
+                               "Counting buildings at a different water level would make the advisory disagree with the mapped buildings.",
+                               [f"Retry with wse_m={effective_wse_m}"])
         valid_brgys = ["BURGOS", "GERONIMO", "MACABUD", "MANGGAHAN", "MASCAP", "MONTALBAN", "PURAY", "ROSARIO", "SAN ISIDRO", "SAN JOSE", "SAN RAFAEL"]
         if brgy not in valid_brgys:
             return _tool_error("validation_error", f"Unknown barangay '{brgy}'.", valid_brgys)
@@ -1653,10 +1604,10 @@ def _run_spark_commander(
         return {"affected_structures": s["affected_structures"], "low": s["low_depth_count"],
                 "medium": s["medium_depth_count"], "critical": s["critical_depth_count"],
                 "affected_evac_centers": s["affected_evac_centers_count"],
-                "critical_buildings": [
-                    {"building_id": b.get("building_id"), "depth_m": b.get("flood_depth_m"),
-                     "infra_category": b.get("infra_category"), "lat": b.get("building_lat"), "lon": b.get("building_lon")}
-                    for b in res["critical_buildings"][:6]]}
+                "affected_schools": s["affected_schools_count"],
+                "affected_healthcare": s["affected_healthcare_count"],
+                "compromised_evac_centers": s["compromised_evac_centers"],
+                "note": "Aggregate counts only. No per-building dispatch is issued; generate_area_advisory gives general guidance."}
 
     def tool_list_evac(args):
         la, lo = args.get("target_lat"), args.get("target_lon")
@@ -1692,42 +1643,46 @@ def _run_spark_commander(
         return {"route_found": route["route_found"], "vehicle_type": vehicle,
                 "route_distance_m": route["route_distance_m"], "eta_minutes": route["eta_minutes"],
                 "severed_segments_count": route["severed_segments_count"],
-                "next_step": ("Now call generate_dispatch_ticket for the deepest building_ids." if route["route_found"]
+                "next_step": ("Now call generate_area_advisory for general barangay guidance." if route["route_found"]
                               else "No passable route for this vehicle. Retry ONCE with vehicle_type amphibious_rubber_boat and max_passable_depth_m 10.0, or explain why not.")}
 
-    def tool_dispatch(args):
-        ids = args.get("building_ids")
+    def tool_advisory(args):
         if state["inundation"] is None:
-            return _tool_error("precondition_error", "Call get_inundated_structures first so real building_ids are available.",
-                               ["get_inundated_structures returns critical_buildings with building_id values."])
-        if not isinstance(ids, list) or not ids:
-            return _tool_error("validation_error", "building_ids must be a non-empty list of building_id strings from get_inundated_structures.",
-                               [b.get("building_id") for b in state["inundation"]["critical_buildings"][:6]])
-        crit = state["inundation"]["critical_buildings"]
-        by_id = {str(b.get("building_id")): b for b in crit}
-        unknown = [i for i in ids if str(i) not in by_id]
-        if unknown:
-            return _tool_error("not_found", f"Unknown building_id(s): {unknown}. Use only ids returned by get_inundated_structures.",
-                               list(by_id.keys())[:6])
-        selected = [by_id[str(i)] for i in ids][:3]
-        vehicle = str(args.get("vehicle_type") or (state["routes"][-1]["vehicle_type"] if state["routes"] else "amphibious_rubber_boat"))
-        evac_center = str(args.get("evacuation_center") or state["evac_name"])
+            return _tool_error("precondition_error", "Call get_inundated_structures first so aggregate counts are available.",
+                               ["get_inundated_structures returns aggregate depth-band counts for the barangay."])
+        # Single source of truth: once a route exists, its origin/destination
+        # centre (state["evac_name"], also TriageRouteResponse.evacuation_center_name
+        # and the map marker) is the ONLY centre the advisory may name. A
+        # model-supplied different centre (e.g. Covered Court while the route
+        # goes to Elementary School, 45 m away) caused the advisory/marker mismatch.
+        if state["routes"]:
+            evac_center = state["evac_name"]
+        else:
+            evac_center = str(args.get("evacuation_center") or state["evac_name"])
         _flooded_names = {c["name"].strip().lower() for c in _safety_ranked if c["flooded"]}
         if evac_center.strip().lower() in _flooded_names:
             return _tool_error("flooded_evacuation_center",
-                               f"Evacuation destination '{evac_center}' is itself flooded at WSE {effective_wse_m:.2f} m. Evacuate to a dry centre instead.",
+                               f"Evacuation destination '{evac_center}' is itself flooded at WSE {effective_wse_m:.2f} m. Use a dry centre instead.",
                                [c["name"] for c in _dry_suggestions()])
-        eta = float(state["routes"][-1]["route"]["eta_minutes"]) if state["routes"] and state["routes"][-1]["route"]["route_found"] else 5.0
-        tickets, telemetry = generate_dispatch_tickets(
-            barangay=resolved_barangay, wse_m=effective_wse_m, water_depth_m=effective_depth_m,
-            evacuation_center=evac_center, vehicle_type=vehicle, eta_minutes=eta, critical_buildings=selected)
-        state["tickets"] = tickets
+        vehicle = str(args.get("vehicle_type") or (state["routes"][-1]["vehicle_type"] if state["routes"] else "amphibious_rubber_boat"))
+        _last = state["routes"][-1]["route"] if state["routes"] else {"eta_minutes": 5.0, "route_distance_m": 0.0, "severed_segments_count": 0, "route_found": False}
+        _first = state["routes"][0]["route"] if state["routes"] else _last
+        advisory, telemetry = generate_area_advisory(
+            barangay=resolved_barangay,
+            summary=InundatedStructureSummary(**state["inundation"]["summary"]),
+            evacuation_center=evac_center, vehicle_type=vehicle,
+            eta_minutes=float(_last.get("eta_minutes") or 5.0),
+            route_distance_m=float(_last.get("route_distance_m") or 0.0),
+            severed_segments_count=int(_first.get("severed_segments_count") or 0),
+            primary_route_severed=not bool(_first.get("route_found")),
+        )
+        state["advisory"] = advisory
         state["telemetry"] = telemetry
-        return {"tickets_generated": len(tickets),
-                "tickets": [{"ticket_id": tk.ticket_id, "building_id": tk.building_id, "priority": tk.priority, "eta_minutes": tk.eta_minutes} for tk in tickets]}
+        return {"advisory_generated": True, "advisory_level": advisory.advisory_level,
+                "headline": advisory.headline, "staging_point": advisory.staging_point}
 
     executors = {"get_inundated_structures": tool_get_inundated, "list_evacuation_centers": tool_list_evac,
-                 "compute_safe_rescue_route": tool_route, "generate_dispatch_ticket": tool_dispatch}
+                 "compute_safe_rescue_route": tool_route, "generate_area_advisory": tool_advisory}
 
     system_prompt = (
         "You are the HydroSight Spatial Commander for Rodriguez (Montalban), Rizal flood rescue. You command deterministic "
@@ -1737,8 +1692,8 @@ def _run_spark_commander(
         "3) call compute_safe_rescue_route from that centre's exact coordinates with vehicle 6x6 High-Water Rescue Truck and "
         "max_passable_depth_m 0.5; if route_found is false, retry ONCE with amphibious_rubber_boat and max_passable_depth_m 10.0 "
         "(deep water over roads does not block a boat); "
-        "4) call generate_dispatch_ticket for up to 3 of the deepest building_ids from step 1, with your chosen evacuation centre "
-        "and final vehicle; 5) reply with a one-paragraph mission summary and call no more tools. "
+        "4) call generate_area_advisory with your chosen dry evacuation centre and final vehicle to issue ONE general "
+        "barangay advisory (never a per-house dispatch); 5) reply with a one-paragraph mission summary and call no more tools. "
         "If a tool returns an error object, correct the arguments and retry."
     )
     context = {
@@ -1799,7 +1754,7 @@ def _run_spark_commander(
     # The commander only wins if it actually drove all three mission tools
     called = {tr["tool"] for tr in state["trace"]}
     found_routes = [r for r in state["routes"] if r["route"]["route_found"]]
-    if state["inundation"] is None or not found_routes or not state.get("tickets"):
+    if state["inundation"] is None or not found_routes or not state.get("advisory"):
         return None
     state["final_route_call"] = found_routes[-1]
     state["primary_route_call"] = state["routes"][0]
@@ -1991,11 +1946,32 @@ def run_autonomous_triage_agent(req: TriageRouteRequest) -> TriageRouteResponse:
         except Exception:
             commander_state = None
 
+    def _evac_status_list(selected_name: str, selected_lat: float, selected_lon: float):
+        try:
+            ranked = assess_evacuation_centers(req.target_lat, req.target_lon, wse_m=effective_wse_m, flood_gdf_utm=flood_gdf_utm)[:8]
+        except Exception:
+            ranked = []
+        out = []
+        for c in ranked:
+            out.append(EvacCenterStatus(
+                name=c["name"], lat=c["lat"], lon=c["lon"],
+                distance_m=float(c["straight_dist_m"]),
+                flooded=bool(c["flooded"]),
+                flood_depth_m=float(c["flood_depth_m"] or 0.0),
+                ground_elev_m=c["ground_elev_m"],
+                is_selected=(
+                    str(c["name"]).strip().lower() == str(selected_name).strip().lower()
+                    and abs(float(c["lat"]) - float(selected_lat)) < 0.002
+                    and abs(float(c["lon"]) - float(selected_lon)) < 0.002
+                ),
+            ))
+        return out
+
     if commander_state is not None:
         c_summary = InundatedStructureSummary(**commander_state["inundation"]["summary"])
         c_primary = commander_state["primary_route_call"]
         c_final = commander_state["final_route_call"]
-        c_tickets = commander_state["tickets"]
+        c_advisory = commander_state["advisory"]
         c_telemetry = commander_state["telemetry"]
         c_trace = commander_state["trace"]
 
@@ -2010,7 +1986,7 @@ def run_autonomous_triage_agent(req: TriageRouteRequest) -> TriageRouteResponse:
                 return str(res)[:160]
             if res.get("error"):
                 return f"error({res.get('error_type')}): {res.get('message', '')}"[:160]
-            keys = ("affected_structures", "route_found", "tickets_generated", "evacuation_centers")
+            keys = ("affected_structures", "route_found", "advisory_generated", "evacuation_centers")
             brief = {k: (len(res[k]) if k == "evacuation_centers" else res[k]) for k in keys if k in res}
             return json.dumps(brief, default=str)[:160]
 
@@ -2047,15 +2023,14 @@ def run_autonomous_triage_agent(req: TriageRouteRequest) -> TriageRouteResponse:
             latency_ms=max(140, int((time.perf_counter() - t2) * 1000) + 110),
         ))
 
-        _fmt_live = any("Meta API" in (tk.generated_by_model or "") for tk in c_tickets)
         agent_steps.append(AgentStepLog(
-            step_number=4, phase="Dispatch Ticket Formatting",
-            agent_model=("muse-spark-1.1 (Meta API) - live" if _fmt_live else "Rule-based formatter - live unavailable"),
-            tool_called="generate_dispatch_ticket() [Spark-chosen building_ids]",
-            input_summary=f"Spark arguments: {_trace_args('generate_dispatch_ticket')}",
+            step_number=4, phase="Area Advisory Generation",
+            agent_model="Rule-based area advisory (DEM aggregate)",
+            tool_called="generate_area_advisory() [Spark-chosen centre/vehicle]",
+            input_summary=f"Spark arguments: {_trace_args('generate_area_advisory')}",
             output_summary=(
-                f"Dispatched {len(c_tickets)} structured JSON rescue tickets via {c_telemetry.model_id} "
-                f"({c_telemetry.latency_ms}ms, {c_telemetry.tokens_used} tokens logged to dispatch_telemetry.log)."
+                f"Issued one general Brgy. {resolved_barangay} advisory ({c_advisory.advisory_level}): "
+                f"{c_advisory.headline}. No per-building dispatch tickets were generated."
             ),
             latency_ms=c_telemetry.latency_ms,
         ))
@@ -2064,7 +2039,7 @@ def run_autonomous_triage_agent(req: TriageRouteRequest) -> TriageRouteResponse:
             step_number=5, phase="Tool-Call Trace",
             agent_model="muse-spark-1.3 - live tool-calling",
             tool_called="commander tool loop",
-            input_summary="Tool schemas: get_inundated_structures, list_evacuation_centers, compute_safe_rescue_route, generate_dispatch_ticket",
+            input_summary="Tool schemas: get_inundated_structures, list_evacuation_centers, compute_safe_rescue_route, generate_area_advisory",
             output_summary="; ".join(
                 f"{_i + 1}. {_tr['tool']}({json.dumps(_tr['arguments'], default=str)[:140]}) -> {_result_brief(_tr['result'])}"
                 for _i, _tr in enumerate(c_trace)
@@ -2078,6 +2053,7 @@ def run_autonomous_triage_agent(req: TriageRouteRequest) -> TriageRouteResponse:
             evacuation_center_name=commander_state["evac_name"],
             evacuation_center_lat=commander_state["evac_lat"],
             evacuation_center_lon=commander_state["evac_lon"],
+            evacuation_centers_status=_evac_status_list(commander_state["evac_name"], commander_state["evac_lat"], commander_state["evac_lon"]),
             vehicle_selected=c_final["vehicle_type"],
             max_passable_depth_m=float(c_final["args"].get("max_passable_depth_m") or req.max_passable_depth_m),
             primary_route_severed=not c_primary["route"]["route_found"],
@@ -2087,8 +2063,9 @@ def run_autonomous_triage_agent(req: TriageRouteRequest) -> TriageRouteResponse:
             route_geojson=c_final["route"]["route_geojson"],
             severed_roads_geojson=c_primary["route"]["severed_roads_geojson"],
             inundated_structures=c_summary,
+            buildings_geojson=commander_state["inundation"]["buildings_geojson"],
             agent_steps=agent_steps,
-            dispatch_tickets=c_tickets,
+            area_advisory=c_advisory,
             dispatch_telemetry=c_telemetry,
         )
 
@@ -2174,26 +2151,26 @@ def run_autonomous_triage_agent(req: TriageRouteRequest) -> TriageRouteResponse:
         )
     )
 
-    tickets, telemetry = generate_dispatch_tickets(
+    advisory, telemetry = generate_area_advisory(
         barangay=resolved_barangay,
-        wse_m=effective_wse_m,
-        water_depth_m=effective_depth_m,
+        summary=summary,
         evacuation_center=evac_name,
         vehicle_type=selected_vehicle,
         eta_minutes=final_route["eta_minutes"],
-        critical_buildings=inundation_res["critical_buildings"],
+        route_distance_m=final_route["route_distance_m"],
+        severed_segments_count=primary_route["severed_segments_count"],
+        primary_route_severed=primary_severed,
     )
-    _formatter_was_live = any("Meta API" in (tk.generated_by_model or "") for tk in tickets)
     agent_steps.append(
         AgentStepLog(
             step_number=4,
-            phase="Dispatch Ticket Formatting",
-            agent_model=("muse-spark-1.1 (Meta API) - live" if _formatter_was_live else "Rule-based formatter - live unavailable"),
-            tool_called="generate_dispatch_tickets()",
-            input_summary=f"clusters={len(tickets)}, vehicle={selected_vehicle}",
+            phase="Area Advisory Generation",
+            agent_model="Rule-based area advisory (DEM aggregate)",
+            tool_called="generate_area_advisory()",
+            input_summary=f"barangay={resolved_barangay}, vehicle={selected_vehicle}, staging={evac_name}",
             output_summary=(
-                f"Dispatched {len(tickets)} structured JSON rescue tickets via {telemetry.model_id} "
-                f"({telemetry.latency_ms}ms, {telemetry.tokens_used} tokens logged to dispatch_telemetry.log)."
+                f"Issued one general Brgy. {resolved_barangay} advisory ({advisory.advisory_level}): "
+                f"{advisory.headline}. No per-building dispatch tickets were generated."
             ),
             latency_ms=telemetry.latency_ms,
         )
@@ -2205,6 +2182,7 @@ def run_autonomous_triage_agent(req: TriageRouteRequest) -> TriageRouteResponse:
         evacuation_center_name=evac_name,
         evacuation_center_lat=evac_lat,
         evacuation_center_lon=evac_lon,
+        evacuation_centers_status=_evac_status_list(evac_name, evac_lat, evac_lon),
         vehicle_selected=selected_vehicle,
         max_passable_depth_m=effective_max_depth,
         primary_route_severed=primary_severed,
@@ -2214,147 +2192,10 @@ def run_autonomous_triage_agent(req: TriageRouteRequest) -> TriageRouteResponse:
         route_geojson=final_route["route_geojson"],
         severed_roads_geojson=primary_route["severed_roads_geojson"],
         inundated_structures=summary,
+        buildings_geojson=inundation_res["buildings_geojson"],
         agent_steps=agent_steps,
-        dispatch_tickets=tickets,
+        area_advisory=advisory,
         dispatch_telemetry=telemetry,
     )
 
 
-def simulate_typhoon_surge_with_muse_image(
-    scenario_id: str,
-    current_depth_m: float,
-    surge_delta_m: float,
-    barangay: str,
-    cam_lat: float,
-    cam_lon: float,
-    azimuth_deg: float,
-    fov_deg: float,
-    click_u: float,
-    est_distance_m: float,
-) -> SurgeSimulationResponse:
-    ensure_sample_photos()
-    preset = SCENARIO_PRESETS.get(scenario_id, SCENARIO_PRESETS["kasiglahan_village"])
-    projected_depth_m = round(current_depth_m + surge_delta_m, 2)
-
-    surge_proj = project_photo_to_flood_shapefile(
-        dem_path=str(DEFAULT_DEM_PATH),
-        cam_lon=cam_lon,
-        cam_lat=cam_lat,
-        azimuth_deg=azimuth_deg,
-        fov_deg=fov_deg,
-        click_u=click_u,
-        est_distance_m=est_distance_m,
-        water_depth_m=projected_depth_m,
-        search_radius_m=480.0,
-        output_dir=str(OUTPUTS_DIR),
-        run_id=f"surge_{scenario_id}",
-        barangay=barangay,
-    )
-
-    current_wse_m = round(surge_proj["ground_dem_m"] + current_depth_m, 2)
-    surge_wse_m = surge_proj["water_surface_elev_m"]
-    generated_file = PHOTOS_DIR / f"{preset.id}_muse_surge_{projected_depth_m:.2f}m.jpg"
-    surge_photo_url = f"/static/photos/{generated_file.name}" if generated_file.exists() else f"/static/photos/{preset.id}_surge.jpg"
-    image_generated_by_model = False
-
-    cache_payload = {
-        "endpoint": "muse-image-1.0/simulate-surge",
-        "scenario_id": preset.id,
-        "projected_depth_m": projected_depth_m,
-    }
-    cached = _read_cache(cache_payload)
-    if cached is not None:
-        return SurgeSimulationResponse(
-            scenario_id=preset.id,
-            barangay=surge_proj["inundated_structures"]["barangay"],
-            current_depth_m=round(current_depth_m, 2),
-            projected_surge_depth_m=projected_depth_m,
-            current_wse_m=current_wse_m,
-            surge_wse_m=surge_wse_m,
-            current_photo_url=preset.photo_url,
-            surge_forecast_image_url=cached.get("surge_forecast_image_url", surge_photo_url),
-            alert_headline=cached["alert_headline"],
-            sms_broadcast_text=cached["sms_broadcast_text"],
-            additional_buildings_at_risk=surge_proj["inundated_structures"]["critical_depth_count"],
-            model_used="muse-image-1.0 (Meta AI)" if cached.get("image_generated_by_model") else "Illustrative PIL composite of the photo (not AI-generated)",
-            forecast_image_source="muse_image_generated" if cached.get("image_generated_by_model") else "pil_composite",
-            surge_flood_geojson=surge_proj["flood_geojson"],
-            cached=True,
-        )
-
-    if not generated_file.exists() and META_API_KEY:
-        try:
-            prompt_text = (
-                f"Photorealistic street-level disaster documentary photograph of {preset.name} in Rodriguez, "
-                f"Rizal, Philippines during an intense typhoon surge where muddy brown floodwater reaches "
-                f"{projected_depth_m} meters high, submerging first-floor gates and vehicles up to the roof line, "
-                "overcast monsoon sky, emergency hydrology assessment view."
-            )
-            with httpx.Client(timeout=20.0) as client:
-                resp = client.post(
-                    f"{META_API_BASE_URL}/images/generations",
-                    headers={
-                        "Authorization": f"Bearer {META_API_KEY}",
-                        "Content-Type": "application/json",
-                    },
-                    json={
-                        "model": "muse-image-1.0",
-                        "prompt": prompt_text,
-                        "n": 1,
-                        "size": "1792x1024",
-                        "response_format": "b64_json",
-                    },
-                )
-                if resp.status_code == 200:
-                    data_list = resp.json().get("data", [])
-                    if data_list and "b64_json" in data_list[0]:
-                        img_bytes = base64.b64decode(data_list[0]["b64_json"])
-                        generated_file.write_bytes(img_bytes)
-                        surge_photo_url = f"/static/photos/{generated_file.name}"
-                        image_generated_by_model = True
-        except Exception:
-            pass
-    elif generated_file.exists():
-        # File for THIS projected depth exists from an earlier generation
-        surge_photo_url = f"/static/photos/{generated_file.name}"
-        image_generated_by_model = True
-
-    resolved_brgy = surge_proj["inundated_structures"]["barangay"]
-    alert_headline = (
-        f"MDRRMO RED ALERT: +{surge_delta_m:.1f}m River Surge Forecast in Brgy. {resolved_brgy.title()} "
-        f"(Depth {current_depth_m:.2f}m → {projected_depth_m:.2f}m | WSE {surge_wse_m:.2f}m)"
-    )
-    sms_text = (
-        f"[RODRIGUEZ MDRRMO EMERGENCY BROADCAST] Typhoon surge +1.5m projected in Brgy. {resolved_brgy.title()}. "
-        f"Flood level rising from {current_depth_m:.2f}m to {projected_depth_m:.2f}m (WSE {surge_wse_m:.2f}m). "
-        f"{surge_proj['inundated_structures']['critical_depth_count']} structures face >1.5m inundation. "
-        f"Evacuate immediately to {preset.evacuation_center_name}."
-    )
-
-    _write_cache(
-        cache_payload,
-        {
-            "surge_forecast_image_url": surge_photo_url,
-            "alert_headline": alert_headline,
-            "sms_broadcast_text": sms_text,
-            "image_generated_by_model": image_generated_by_model,
-        },
-    )
-
-    return SurgeSimulationResponse(
-        scenario_id=preset.id,
-        barangay=resolved_brgy,
-        current_depth_m=round(current_depth_m, 2),
-        projected_surge_depth_m=projected_depth_m,
-        current_wse_m=current_wse_m,
-        surge_wse_m=surge_wse_m,
-        current_photo_url=preset.photo_url,
-        surge_forecast_image_url=surge_photo_url,
-        alert_headline=alert_headline,
-        sms_broadcast_text=sms_text,
-        additional_buildings_at_risk=surge_proj["inundated_structures"]["critical_depth_count"],
-        model_used="muse-image-1.0 (Meta AI)" if image_generated_by_model else "Illustrative PIL composite of the photo (not AI-generated)",
-        forecast_image_source="muse_image_generated" if image_generated_by_model else "pil_composite",
-        surge_flood_geojson=surge_proj["flood_geojson"],
-        cached=False,
-    )

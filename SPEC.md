@@ -15,7 +15,7 @@
 2. **Visual Perception (`sam-3.1`):** Performs zero-shot promptable concept segmentation on the street photo to extract binary masks and bounding boxes for `"floodwater"` and submerged vertical scale reference objects (`"vehicle wheel"`, `"car"`, `"tricycle"`, `"person"`, `"gate"`, `"first-floor door"`).
 3. **Visual Hydrological Gauging (`muse-spark-1.3`):** Analyzes the annotated image and SAM 3.1 masks to estimate water depth in meters (`water_depth_m`) and forward distance from the camera (`distance_from_camera_m`) in strict JSON.
 4. **Raycast-to-DEM Physics Engine (`Python / Rasterio / GeoPandas`):** Projects the camera coordinate along the target ray bearing onto a local Digital Elevation Model (`rodriguez_srtmgl1_10m_utm51n.tif` in `EPSG:32651`), samples ground elevation ($Z_{DEM}$), computes Water Surface Elevation ($WSE = Z_{DEM} + h_w$), flood-fills the connected lowland catchment where $DEM \le WSE$, and vectorizes the result into downloadable `.shp` and `.geojson` files.
-5. **Autonomous Triage & Routing (`muse-spark-1.3` + `muse-glimmer`):** Uses tool-calling over an `OSMnx`/`NetworkX` road graph to clip flooded road segments (`depth > 0.5m`), compute safe rescue routes, and generate structured incident dispatch tickets.
+5. **Autonomous Triage & Routing (`muse-spark-1.3` + `muse-glimmer`):** Uses tool-calling over an `OSMnx`/`NetworkX` road graph to clip flooded road segments (`depth > 0.5m`), compute safe rescue routes, and generate one general barangay flood advisory (what residents and responders should do; never a per-house rescue dispatch).
 
 ---
 
@@ -43,7 +43,7 @@ rodriguez-flood-triage/
     │   │   ├── HeaderBar.jsx          # Scenario selector + 1-click Export .SHP button
     │   │   ├── PhotoInspector.jsx     # Left Panel: Street photo, SAM 3.1 mask overlay, click target
     │   │   ├── MapViewcone.jsx        # Right Panel: MapLibre GL 3D terrain, camera pin, Turf.js FOV cone
-    │   │   └── TriageCopilot.jsx      # Bottom Panel: Muse Spark route logs & Muse Glimmer tickets
+    │   │   └── TriageCopilot.jsx      # Bottom Panel: Muse Spark route logs & general area advisory
     │   ├── App.jsx
     │   └── main.jsx
     ├── package.json
@@ -202,9 +202,10 @@ def project_photo_to_flood_shapefile(
 ## 5. Meta AI Integration & Schemas (`backend/meta_agents.py`)
 
 ### 5.1 Caching Requirement
-- All calls to `sam-3.1`, `muse-spark-1.3`, and `muse-glimmer` MUST check `backend/cache/{sha256_hash}.json` before hitting the network so development testing does not deplete the $150 hackathon credit budget.
+- Response caching is **disabled by default** (`HYDROSIGHT_CACHE_ENABLED=0`): all calls to `sam-3.1`, `muse-spark-1.3`, and the dispatch models run fresh against the live API so demo inputs are never answered from `backend/cache/{sha256_hash}.json`. Set `HYDROSIGHT_CACHE_ENABLED=1` only for offline development, where the SHA256 disk cache can be checked before hitting the network to avoid depleting the $150 hackathon credit budget.
 
 ### 5.2 Stage 1: Visual Depth Gauge (`sam-3.1` + `muse-spark-1.3`)
+0. **EXIF geotag scan (before any re-save):** `extract_exif_geotag()` in `backend/meta_agents.py` reads GPS (`GPSLatitude/Longitude`, plus `GPSImgDirection`/`GPSAltitude` when present) from the RAW upload bytes and returns it as `photo_geotag` (`PhotoGeotag` in `backend/schemas.py`). The stored copy is re-saved as a plain RGB JPEG with EXIF stripped, so location data is never kept in `backend/data/sample_photos/`. If the geotag lies inside the Rodriguez pilot coverage (14.69-14.89 N, 121.10-121.35 E), the frontend pre-places the camera pin at those coordinates (and sets azimuth from `GPSImgDirection` when recorded); the operator must still confirm or drag the pin in Step 2, because phone GPS is typically only accurate to 5-30 m and a forwarded photo can carry someone else's location. Geotags outside the pilot area are reported but never auto-placed, and photos with no GPS EXIF (common after WhatsApp/Facebook sharing or screenshots) fall back to manual pin placement with an explicit notice. A geotag is a placement hint, never a verified camera position.
 1. Send uploaded street photo to `sam-3.1` with concept prompts:
    `["floodwater", "vehicle wheel", "car", "tricycle", "person", "gate", "building entrance"]`
 2. Pass the original image + SAM 3.1 bounding/mask metadata to `muse-spark-1.3` with `response_format={"type": "json_object"}` enforcing this Pydantic schema:
@@ -228,7 +229,7 @@ class VisualGaugeResult(BaseModel):
 Provide `muse-spark-1.3` with the following tools:
 1. `get_inundated_structures(wse_m: float, barangay: str)`: Spatial join between flood polygon and `rodriguez_buildings.parquet`, returning counts of buildings with `low (<0.5m)`, `medium (0.5-1.5m)`, and `critical (>1.5m)` flood depth.
 2. `compute_safe_rescue_route(origin_lat: float, origin_lon: float, dest_lat: float, dest_lon: float, max_passable_depth_m: float = 0.5)`: Removes edges from `rodriguez_roads.graphml` intersecting flood polygons deeper than `max_passable_depth_m` and computes shortest path via `networkx.shortest_path`.
-3. `generate_dispatch_ticket(building_id: str, barangay: str, depth_m: float)`: Handed off to `muse-glimmer` for low-latency JSON incident ticket formatting.
+3. `generate_area_advisory(barangay: str, summary: InundatedStructureSummary, evacuation_center: str, vehicle_type: str)`: Rule-based (no LLM) general advisory in `backend/meta_agents.py` from aggregate depth-band counts only. It returns `AreaAdvisory` (`backend/schemas.py`): level/headline, resident actions, responder actions (stage at the safe evacuation centre, close flooded roads, sweep street-by-street), avoid list, compromised-centre warnings, and a copyable public advisory text. It must never target a specific house, `building_id`, address, or occupant count.
 
 ---
 
@@ -237,9 +238,9 @@ Provide `muse-spark-1.3` with the following tools:
 | Method | Endpoint | Purpose |
 | :--- | :--- | :--- |
 | `GET` | `/api/v1/scenarios` | Returns 3 pre-configured Rodriguez flood scenarios (Kasiglahan Village, Brgy. San Jose, Montalban Town Center) with preset camera coordinates, azimuths, and sample photo URLs. |
-| `POST` | `/api/v1/analyze-photo` | Accepts image upload or scenario ID; runs `sam-3.1` + `muse-spark-1.3` visual gauge; returns masks and `VisualGaugeResult`. |
+| `POST` | `/api/v1/analyze-photo` | Accepts image upload or scenario ID; scans raw EXIF for a GPS geotag (`photo_geotag`, pin pre-placement only, EXIF stripped from the stored copy); runs `sam-3.1` + `muse-spark-1.3` visual gauge; returns masks and `VisualGaugeResult`. |
 | `POST` | `/api/v1/project-flood` | Accepts `{ cam_lat, cam_lon, azimuth_deg, fov_deg, click_u, est_distance_m, water_depth_m }`; runs `project_photo_to_flood_shapefile()`; returns GeoJSON layers + Shapefile download link. |
-| `POST` | `/api/v1/triage-route` | Runs `muse-spark-1.3` tool-calling to compute safe evacuation routes and `muse-glimmer` dispatch tickets. |
+| `POST` | `/api/v1/triage-route` | Runs `muse-spark-1.3` tool-calling to compute safe evacuation routes and issue one general barangay `AreaAdvisory` (no per-building dispatch tickets). |
 | `GET` | `/api/v1/download-shp/{run_id}` | Streams the zipped `.shp` bundle (`flood_extent_{run_id}.zip`). |
 
 ---
@@ -274,7 +275,7 @@ When initializing this repository, execute in this exact order:
 To qualify for the Meta Hackathon Bonus Categories (9.1 open-weight is dropped and not claimed; see below), implement the following architectural additions:
 
 ### 9.1 Best Build on Meta Open Weight Models (,000) - DROPPED, NOT CLAIMED
-- **Status (2026-10-27):** This category is intentionally NOT pursued and must not be claimed in the UI, API, logs, or submission materials. No open-weight model is served (no Fireworks/Baseten/Modal/vLLM/Ollama endpoint); ticket formatting uses muse-spark-1.1 via the Meta API or a rule-based fallback, and telemetry is recorded in backend/outputs/dispatch_telemetry.log as plain dispatch telemetry.
+- **Status (2026-10-27):** This category is intentionally NOT pursued and must not be claimed in the UI, API, logs, or submission materials. No open-weight model is served (no Fireworks/Baseten/Modal/vLLM/Ollama endpoint); the area advisory is rule-based (no ticket formatting model), and telemetry is recorded in backend/outputs/dispatch_telemetry.log as plain advisory telemetry.
 - Do not reintroduce open-weight branding, badges, verification logs, or provider claims unless a real open-weight deployment exists and is exercised end-to-end.
 
 ### 9.2 Best Agentic Use-Case ($5,000)
@@ -284,11 +285,11 @@ To qualify for the Meta Hackathon Bonus Categories (9.1 open-weight is dropped a
   1. **Step 1 (Perception & Self-Check):** Agent calls `analyze_water_level_with_sam3()`. If `confidence_score < 0.70`, agent automatically re-prompts `sam-3.1` with secondary fallback references (`"fence"`, `"utility pole"`, `"sidewalk curb"`).
   2. **Step 2 (Hydro-Spatial Projection):** Agent calls `project_photo_to_flood_shapefile()` to generate the 3D WSE surface and queries `get_inundated_structures()`.
   3. **Step 3 (Dynamic Graph Rerouting):** Agent inspects affected clusters where `depth_m > 1.0`, selects the nearest MDRRMO evacuation center, and calls `compute_safe_rescue_route(max_passable_depth_m=0.5)`. If the primary route fails or is completely severed by deep water (`>0.5m`), the agent autonomously retries with `vehicle_type="amphibious_rubber_boat"` (`max_passable_depth_m=2.5`).
-  4. **Step 4 (Multi-Agent Handoff to `muse-glimmer`):** Agent delegates affected building clusters to `muse-glimmer` (running on open-weight inference) to batch-generate prioritized JSON rescue dispatch tickets.
+  4. **Step 4 (General Area Advisory):** Agent calls `generate_area_advisory()` to issue ONE barangay-level advisory from aggregate counts: residents are told what to do and where to go, responders are staged generally at the safe evacuation centre with road-closure and street-sweep actions. No building cluster, house, or address is dispatched to, and no occupant count is invented.
 
-### 9.3 Best Creative Build ($5,000) — Muse Image / Muse Wonder Integration
-- **Requirement:** Compelling, original integration of `muse-image` or `muse-wonder`.
-- **Feature: "Visual Surge Simulator & Resident Evacuation Alert Card"**
-  - Add a `POST /api/v1/simulate-surge` endpoint and a **"Simulate +1.5m Typhoon Surge (Muse Image / Wonder)"** button in `PhotoInspector.jsx`.
-  - When clicked, pass the original street photo + the SAM 3.1 water mask to `muse-image` / `muse-wonder` to generate a photorealistic visual forecast of what that exact street in Rodriguez will look like if river levels rise by an additional `+1.5 meters` (matching the 3D DEM simulation on the right panel).
-  - Render a side-by-side slider (**Current Flood Photo** vs. **Muse Image/Wonder +1.5m Surge Forecast**) that MDRRMO officers can export as an instant visual evacuation warning card for social media/SMS alerts.
+### 9.3 Muse Image / Muse Wonder Integration - REMOVED, NOT CLAIMED
+- **Status (2026-10-28):** The "Simulate +1.5m Typhoon Surge" feature is removed from the API, UI, and this spec, and no Muse Image / Muse Wonder bonus is claimed for it. Do not reintroduce it.
+- **What was removed:** `POST /api/v1/simulate-surge` (`simulate_typhoon_surge_with_muse_image` in `backend/meta_agents.py`, `SurgeSimulationRequest`/`SurgeSimulationResponse` in `backend/schemas.py`), the "Simulate +1.5m flood surge" button, generated/composited forecast photo, side-by-side compare slider, and surge SMS alert in `frontend/src/components/PhotoInspector.jsx` / `frontend/src/App.jsx`.
+- **Why:** It added a fixed, invented `+1.5 m` to a measured depth and rendered a generated or PIL-composited photo as if it were a forecast of that exact street. That manufactures a scenario with no observed or forecast input behind it and invites wrong assumptions (depth, extent, and urgency) from a picture that never happened.
+- **Replacement: DEM uncertainty band for the measured depth only.** Every `POST /api/v1/project-flood` response already returns `dem_uncertainty_m`, `wse_low_m`, `wse_high_m`, `flood_area_low_sqm`, and `flood_area_high_sqm`, computed in `backend/geo_engine.py` (`_dem_uncertainty_m`, connected extent recomputed at `wse_low`/`wse_high`). `PhotoInspector.jsx` now displays that band via `uncertaintyBand()` in `frontend/src/utils/format.js`: WSE (measured) +/- DEM uncertainty and the low-high connected flood area in hectares. It adds no hypothetical rise, generates no imagery, and is labelled "not a forecast."
+- **If a future-scenario view is ever wanted again:** drive it only from a real, sourced input (for example a PAGASA / river-gauge forecast level for Rodriguez with its timestamp and provenance displayed), run it through the same DEM projection as an explicitly labelled scenario, and show its uncertainty. Never use a hard-coded delta or a photorealistic generated image as evidence.

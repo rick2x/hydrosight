@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect } from "react";
-import { Upload, Crosshair, AlertTriangle, Copy, Check, RefreshCw, Eye, EyeOff, Trash2, Waves } from "lucide-react";
+import { Upload, Crosshair, RefreshCw, Eye, EyeOff, Trash2, Waves } from "lucide-react";
+import { formatNumber, uncertaintyBand } from "../utils/format";
 
 const MASK_STROKES = {
   floodwater: { stroke: "#0e7490", fill: "rgba(14, 116, 144, 0.22)" },
@@ -20,21 +21,16 @@ export default function PhotoInspector({
   onUploadCustomPhoto,
   photoUploading,
   photoUploadError,
+  geotagNotice,
   customPhotoPreview,
   onResetCustomPhoto,
   onDeleteCustomPhoto,
-  onSimulateSurge,
-  surgeResult,
-  surgeLoading,
   floodProjection,
   projectionLoading,
 }) {
   const [showMasks, setShowMasks] = useState(true);
-  const [compareSlider, setCompareSlider] = useState(50);
-  const [copiedSms, setCopiedSms] = useState(false);
   const [dragActive, setDragActive] = useState(false);
   const [imgAspect, setImgAspect] = useState(16 / 9);
-  const [showSurgeDrawer, setShowSurgeDrawer] = useState(false);
 
   const SCAN_STAGES = ["Segmenting floodwater", "Locating scale reference", "Gauging water depth"];
   const [scanStage, setScanStage] = useState(0);
@@ -105,12 +101,6 @@ export default function PhotoInspector({
     }
   };
 
-  const handleCopyAlert = () => {
-    if (!surgeResult?.sms_broadcast_text) return;
-    navigator.clipboard?.writeText(surgeResult.sms_broadcast_text);
-    setCopiedSms(true);
-    setTimeout(() => setCopiedSms(false), 2000);
-  };
 
   return (
     <section className="panel-card" aria-label="Street photo perception and visual gauge">
@@ -204,6 +194,23 @@ export default function PhotoInspector({
           )}
         </div>
       </div>
+
+      {geotagNotice && !photoUploadError && (
+        <div
+          style={{
+            padding: "8px 12px",
+            borderRadius: "6px",
+            backgroundColor: "var(--surface)",
+            color: "var(--muted)",
+            border: "1px solid var(--border)",
+            fontSize: "12.5px",
+            lineHeight: 1.45,
+          }}
+        >
+          <strong style={{ color: "var(--text)" }}>Photo location: </strong>
+          {geotagNotice}
+        </div>
+      )}
 
       {photoUploadError && (
         <div
@@ -351,7 +358,7 @@ export default function PhotoInspector({
                 style={{
                   position: "absolute",
                   inset: 0,
-                  background: "linear-gradient(to top, rgba(14, 116, 144, 0.20), rgba(14, 116, 144, 0.02) 55%)",
+                  background: "rgba(15, 23, 42, 0.10)",
                   pointerEvents: "none",
                   zIndex: 5,
                 }}
@@ -363,8 +370,8 @@ export default function PhotoInspector({
                   left: 0,
                   right: 0,
                   height: "2px",
-                  background: "linear-gradient(to right, transparent, #38bdf8 18%, #a5f3fc 50%, #38bdf8 82%, transparent)",
-                  boxShadow: "0 0 14px rgba(56, 189, 248, 0.85)",
+                  background: "var(--accent)",
+                  boxShadow: "none",
                   pointerEvents: "none",
                   zIndex: 6,
                 }}
@@ -378,10 +385,10 @@ export default function PhotoInspector({
                   left: "50%",
                   transform: "translateX(-50%)",
                   width: "min(430px, calc(100% - 24px))",
-                  background: "linear-gradient(135deg, rgba(8, 47, 73, 0.95), rgba(14, 116, 144, 0.93))",
-                  border: "1px solid rgba(125, 211, 252, 0.45)",
-                  borderRadius: "10px",
-                  boxShadow: "0 10px 28px rgba(8, 47, 73, 0.45)",
+                  background: "var(--surface)",
+                  border: "1px solid var(--border)",
+                  borderRadius: "var(--radius-card)",
+                  boxShadow: "none",
                   padding: "10px 12px",
                   pointerEvents: "none",
                   zIndex: 7,
@@ -389,27 +396,27 @@ export default function PhotoInspector({
               >
                 <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
                   <span style={{ position: "relative", width: "32px", height: "32px", flexShrink: 0, display: "inline-flex", alignItems: "center", justifyContent: "center" }}>
-                    <span className="hydro-pulse-ring" style={{ position: "absolute", inset: 0, borderRadius: "50%", border: "1.5px solid rgba(125, 211, 252, 0.8)" }} />
-                    <span style={{ width: "32px", height: "32px", borderRadius: "50%", backgroundColor: "rgba(56, 189, 248, 0.18)", display: "inline-flex", alignItems: "center", justifyContent: "center" }}>
-                      <Waves size={16} color="#7dd3fc" />
+                    <span className="hydro-pulse-ring" style={{ position: "absolute", inset: 0, borderRadius: "50%", border: "1.5px solid var(--accent)" }} />
+                    <span style={{ width: "32px", height: "32px", borderRadius: "50%", backgroundColor: "var(--accent-soft)", display: "inline-flex", alignItems: "center", justifyContent: "center" }}>
+                      <Waves size={16} color="var(--accent)" />
                     </span>
                   </span>
                   <span style={{ minWidth: 0 }}>
-                    <span style={{ display: "block", color: "#ffffff", fontSize: "12.5px", fontWeight: 600, lineHeight: 1.25 }}>
-                      Surveying the floodwater
+                    <span style={{ display: "block", color: "var(--text)", fontSize: "13px", fontWeight: 600, lineHeight: 1.25 }}>
+                      Analyzing flood photo
                     </span>
-                    <span style={{ display: "block", color: "#bae6fd", fontSize: "11px", lineHeight: 1.35 }}>
+                    <span style={{ display: "block", color: "var(--muted)", fontSize: "11.5px", lineHeight: 1.35 }}>
                       {SCAN_STAGES[scanStage]} · SAM 3.1 + Muse Spark
                     </span>
                   </span>
                 </div>
-                <div style={{ marginTop: "9px", height: "3px", borderRadius: "2px", backgroundColor: "rgba(255, 255, 255, 0.16)", overflow: "hidden" }}>
-                  <div className="hydro-loadbar" style={{ width: "34%", height: "100%", borderRadius: "2px", background: "linear-gradient(to right, #0ea5e9, #a5f3fc)" }} />
+                <div style={{ marginTop: "9px", height: "3px", borderRadius: "2px", backgroundColor: "var(--active)", overflow: "hidden" }}>
+                  <div className="hydro-loadbar" style={{ width: "34%", height: "100%", borderRadius: "2px", background: "var(--accent)" }} />
                 </div>
                 <div style={{ marginTop: "8px", display: "flex", gap: "12px", flexWrap: "wrap" }}>
                   {SCAN_STAGES.map((label, i) => (
-                    <span key={label} style={{ display: "inline-flex", alignItems: "center", gap: "5px", fontSize: "10px", color: i <= scanStage ? "#e0f2fe" : "rgba(186, 230, 253, 0.45)", fontWeight: i === scanStage ? 600 : 400 }}>
-                      <span className={i === scanStage ? "hydro-blink" : ""} style={{ width: "6px", height: "6px", borderRadius: "50%", backgroundColor: i <= scanStage ? "#38bdf8" : "rgba(186, 230, 253, 0.35)", display: "inline-block" }} />
+                    <span key={label} style={{ display: "inline-flex", alignItems: "center", gap: "5px", fontSize: "11px", color: i <= scanStage ? "var(--text)" : "var(--faint)", fontWeight: i === scanStage ? 600 : 400 }}>
+                      <span className={i === scanStage ? "hydro-blink" : ""} style={{ width: "6px", height: "6px", borderRadius: "50%", backgroundColor: i <= scanStage ? "var(--accent)" : "var(--border-strong)", display: "inline-block" }} />
                       {label}
                     </span>
                   ))}
@@ -426,10 +433,11 @@ export default function PhotoInspector({
                 top: "12px",
                 left: "50%",
                 transform: "translateX(-50%)",
-                backgroundColor: "rgba(15, 23, 42, 0.88)",
-                color: "#ffffff",
+                backgroundColor: "var(--surface)",
+                border: "1px solid var(--border)",
+                color: "var(--text)",
                 padding: "6px 14px",
-                borderRadius: "20px",
+                borderRadius: "var(--radius-control)",
                 fontSize: "12px",
                 fontWeight: 500,
                 display: "flex",
@@ -440,7 +448,7 @@ export default function PhotoInspector({
                 whiteSpace: "nowrap",
               }}
             >
-              <Crosshair size={13} color="#38bdf8" />
+              <Crosshair size={13} color="var(--accent)" />
               <span>Click waterline to cast 3D projection</span>
             </div>
           )}
@@ -453,10 +461,11 @@ export default function PhotoInspector({
                 top: "12px",
                 left: "50%",
                 transform: "translateX(-50%)",
-                backgroundColor: "rgba(15, 23, 42, 0.90)",
-                color: "#38bdf8",
+                backgroundColor: "var(--surface)",
+                border: "1px solid var(--border)",
+                color: "var(--accent)",
                 padding: "6px 14px",
-                borderRadius: "20px",
+                borderRadius: "var(--radius-control)",
                 fontSize: "12px",
                 fontWeight: 600,
                 display: "flex",
@@ -469,29 +478,6 @@ export default function PhotoInspector({
             >
               <RefreshCw size={13} className="spin" />
               <span>Projecting 3D DEM flood extent & triage...</span>
-            </div>
-          )}
-
-          {/* Side-by-Side Typhoon Surge Forecast Overlay */}
-          {surgeResult && (
-            <div
-              style={{
-                position: "absolute",
-                inset: 0,
-                clipPath: `inset(0 0 0 ${compareSlider}%)`,
-                pointerEvents: "none",
-              }}
-            >
-              <img
-                src={surgeResult.surge_forecast_image_url}
-                alt="+1.5m typhoon surge forecast"
-                style={{
-                  width: "100%",
-                  height: "100%",
-                  objectFit: "cover",
-                  display: "block",
-                }}
-              />
             </div>
           )}
 
@@ -733,98 +719,37 @@ export default function PhotoInspector({
           </div>
         )}
 
-        {/* Typhoon Surge Simulation Control */}
-        {photoUrl && (
-          <div
-            style={{
-              display: "flex",
-              justifyContent: "space-between",
-              alignItems: "center",
-              gap: "10px",
-              paddingTop: "8px",
-              borderTop: "1px solid var(--border)", /* taste-skill-ignore */
-              flexWrap: "wrap",
-            }}
-          >
-            <button
-              type="button"
-              className="btn-secondary"
-              onClick={() => {
-                if (!surgeResult) {
-                  onSimulateSurge();
-                }
-                setShowSurgeDrawer((prev) => !prev);
+        {/* DEM uncertainty band for the measured depth (replaces the removed +1.5 m surge simulation) */}
+        {(() => {
+          const band = uncertaintyBand(floodProjection);
+          return (
+            <div
+              style={{
+                padding: "8px 12px",
+                borderRadius: "6px",
+                backgroundColor: "var(--surface)",
+                color: "var(--muted)",
+                border: "1px solid var(--border)",
+                fontSize: "12.5px",
+                lineHeight: 1.45,
               }}
-              disabled={surgeLoading}
-              style={{ fontSize: "12px", height: "30px" }}
             >
-              <AlertTriangle size={13} color="var(--warning)" />
-              <span>
-                {surgeLoading
-                  ? "Simulating surge..."
-                  : surgeResult
-                  ? (showSurgeDrawer ? "Hide +1.5m forecast" : "View +1.5m surge forecast")
-                  : "Simulate +1.5m flood surge"}
-              </span>
-            </button>
-
-            {surgeResult && showSurgeDrawer && (
-              <div style={{ display: "flex", alignItems: "center", gap: "8px", flex: 1, minWidth: "160px" }}>
-                <label htmlFor="surge-compare" style={{ fontSize: "12px", color: "var(--muted)", whiteSpace: "nowrap" }}>
-                  Surge compare:
-                </label>
-                <input
-                  id="surge-compare"
-                  type="range"
-                  min="0"
-                  max="100"
-                  value={compareSlider}
-                  onChange={(e) => setCompareSlider(Number(e.target.value))}
-                  style={{ flex: 1 }}
-                />
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* Surge Result Alert Box */}
-        {photoUrl && surgeResult && showSurgeDrawer && (
-          <div
-            style={{
-              backgroundColor: "var(--warning-soft)",
-              border: "1px solid var(--warning-border)",
-              borderRadius: "6px",
-              padding: "10px 12px",
-              display: "flex",
-              flexDirection: "column",
-              gap: "6px",
-              marginTop: "4px",
-            }}
-          >
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
-              <strong style={{ fontSize: "12.5px", color: "var(--warning)" }}>
-                {surgeResult.alert_headline}
-              </strong>
-              <button
-                type="button"
-                className="btn-secondary"
-                onClick={handleCopyAlert}
-                style={{ fontSize: "11.5px", height: "26px", padding: "0 8px" }}
-              >
-                {copiedSms ? <Check size={12} /> : <Copy size={12} />}
-                <span>{copiedSms ? "Copied" : "Copy SMS alert"}</span>
-              </button>
+              <strong style={{ color: "var(--text)" }}>DEM uncertainty band · measured depth only. </strong>
+              {band ? (
+                <span className="num">
+                  WSE {formatNumber(band.wseM, 2)} m ± {formatNumber(band.uncertaintyM, 2)} m ({formatNumber(band.wseLowM, 2)}–{formatNumber(band.wseHighM, 2)} m) ·
+                  Connected flood area {formatNumber(band.areaLowHa, 1)}–{formatNumber(band.areaHighHa, 1)} ha (central {formatNumber(band.areaHa, 1)} ha).
+                  This band comes from DEM vertical uncertainty on the measured depth — it is not a forecast and adds no hypothetical surge.
+                </span>
+              ) : (
+                <span>
+                  Run the Step 2 DEM projection to see the ±DEM uncertainty band for the measured depth.
+                  No hypothetical surge scenario is generated.
+                </span>
+              )}
             </div>
-            <p style={{ margin: 0, fontSize: "12px", color: "var(--warning)", lineHeight: 1.4 }}>
-              {surgeResult.sms_broadcast_text}
-            </p>
-            <p style={{ margin: 0, fontSize: "11.5px", color: "var(--muted)", lineHeight: 1.4 }}>
-              {surgeResult.forecast_image_source === "muse_image_generated"
-                ? `Forecast image generated by ${surgeResult.model_used}.`
-                : "Forecast image is an illustrative composite of the photo (not AI-generated). The surge flood extent and depths behind it are DEM-computed."}
-            </p>
-          </div>
-        )}
+          );
+        })()}
       </div>
     </section>
   );

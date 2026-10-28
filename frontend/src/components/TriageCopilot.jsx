@@ -1,18 +1,17 @@
 import React, { useState } from "react";
-import { AlertTriangle, School, HeartPulse, Landmark, Check, Send, Info } from "lucide-react";
+import { Check, Copy, Info } from "lucide-react";
 
 export default function TriageCopilot({ triageData, floodProjection, projectionLoading, triageLoading }) {
-  const [dispatchedIds, setDispatchedIds] = useState({});
+  const [copied, setCopied] = useState(false);
 
   const steps = triageData?.agent_steps || [];
-  const tickets = triageData?.dispatch_tickets || [];
-  const telemetry = triageData?.dispatch_telemetry || null;
+  const advisory = triageData?.area_advisory || null;
 
-  const handleDispatchToggle = (ticketId) => {
-    setDispatchedIds((prev) => ({
-      ...prev,
-      [ticketId]: !prev[ticketId],
-    }));
+  const handleCopyAdvisory = () => {
+    if (!advisory?.copyable_text) return;
+    navigator.clipboard?.writeText(advisory.copyable_text);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
   };
 
   return (
@@ -33,7 +32,7 @@ export default function TriageCopilot({ triageData, floodProjection, projectionL
               Autonomous triage state machine
             </h2>
             <p style={{ margin: "2px 0 0 0", fontSize: "12.5px", color: "var(--muted)" }}>
-              4-phase vision perception, DEM flood-fill, road graph routing & dispatch handoff
+              4-phase vision perception, DEM flood-fill, road graph routing & general area advisory
             </p>
           </div>
           <span className={`status-pill ${steps.length > 0 ? "positive" : "neutral"} num`}>
@@ -41,52 +40,62 @@ export default function TriageCopilot({ triageData, floodProjection, projectionL
           </span>
         </div>
 
-        <div className="table-wrap">
-          <table className="data-table">
-            <thead>
-              <tr>
-                <th style={{ width: "28%" }}>Phase & model</th>
-                <th style={{ width: "56%" }}>Autonomous decision & outcome</th>
-                <th className="num" style={{ width: "16%" }}>Latency</th>
-              </tr>
-            </thead>
-            <tbody>
-              {steps.length === 0 ? (
-                <tr>
-                  <td colSpan="3" style={{ textAlign: "center", color: "var(--muted)", padding: "28px 12px" }}>
-                    {projectionLoading || triageLoading
-                      ? "Autonomous spatial state machine running perception & DEM projection..."
-                      : "Autonomous state machine standby. Click a point on photo or map to run triage."}
-                  </td>
-                </tr>
-              ) : (
-                steps.map((step) => (
-                  <tr key={step.step_number}>
-                    <td>
-                      <div style={{ fontWeight: 500, color: "var(--text)", fontSize: "12.5px" }}>
-                        {step.phase}
-                      </div>
-                      <div style={{ fontSize: "11.5px", color: "var(--muted)" }}>
-                        {step.agent_model}
-                      </div>
-                    </td>
-                    <td style={{ fontSize: "12.5px", color: "var(--muted)", lineHeight: 1.4 }}>
-                      {step.output_summary}
-                    </td>
-                    <td className="num">
-                      <span style={{ color: "var(--text)", fontWeight: 500 }}>{step.latency_ms}</span>{" "}
-                      <span style={{ color: "var(--muted)", fontSize: "11.5px" }}>ms</span>
-                    </td>
-                  </tr>
-                ))
-              )}
-            </tbody>
-          </table>
-        </div>
+        {steps.length === 0 ? (
+          <p className="agent-empty">
+            {projectionLoading || triageLoading
+              ? "Autonomous spatial state machine running perception & DEM projection..."
+              : "Autonomous state machine standby. Click a point on photo or map to run triage."}
+          </p>
+        ) : (
+          <ol className="agent-step-list">
+            {steps.map((step) => {
+              const traceParts =
+                step.output_summary && /^\d+\. /.test(step.output_summary)
+                  ? step.output_summary.split(/; (?=\d+\. )/)
+                  : null;
+              return (
+                <li key={step.step_number} className="agent-step">
+                  <div className="agent-step-head">
+                    <span className="agent-step-title">
+                      <span className="status-pill neutral num">Step {step.step_number}</span>
+                      <span className="agent-step-phase">{step.phase}</span>
+                    </span>
+                    <span className="agent-step-latency num">{step.latency_ms >= 1000 ? `${(step.latency_ms / 1000).toFixed(1)} s` : `${step.latency_ms} ms`}</span>
+                  </div>
+                  <p className="agent-step-model">{step.agent_model}</p>
+                  {step.tool_called && (
+                    <p className="agent-step-line">
+                      <span className="agent-step-label">Decision</span>
+                      <span className="mono-id">{step.tool_called}</span>
+                    </p>
+                  )}
+                  {step.input_summary && (
+                    <p className="agent-step-line">
+                      <span className="agent-step-label">Input</span>
+                      <span>{step.input_summary}</span>
+                    </p>
+                  )}
+                  <div className="agent-step-line">
+                    <span className="agent-step-label">Outcome</span>
+                    {traceParts ? (
+                      <ol className="agent-trace-list">
+                        {traceParts.map((part, i) => (
+                          <li key={i}>{part.replace(/^\d+\. /, "")}</li>
+                        ))}
+                      </ol>
+                    ) : (
+                      <span>{step.output_summary}</span>
+                    )}
+                  </div>
+                </li>
+              );
+            })}
+          </ol>
+        )}
       </section>
 
-      {/* Right Card: Priority Rescue Dispatch Tickets (Muse Spark Dispatcher) */}
-      <section className="panel-card" aria-label="Priority rescue dispatch tickets">
+      {/* Right Card: General Barangay Flood Advisory (no per-house dispatch) */}
+      <section className="panel-card" aria-label="Barangay flood advisory and recommended actions">
         <div
           style={{
             display: "flex",
@@ -98,138 +107,145 @@ export default function TriageCopilot({ triageData, floodProjection, projectionL
         >
           <div>
             <h2 style={{ fontSize: "15px", fontWeight: 600, margin: 0, color: "var(--text)" }}>
-              Priority rescue dispatch queue
+              Barangay flood advisory — what to do
             </h2>
             <p style={{ margin: "2px 0 0 0", fontSize: "12.5px", color: "var(--muted)" }}>
-              {telemetry ? (
-                <>Ticket formatter: {telemetry.provider} · <span className="num">{telemetry.tokens_used} tokens</span></>
-              ) : (
-                "Multi-agent dispatch handoff standby"
-              )}
+              {advisory
+                ? "General guidance for the whole affected area. No house-by-house rescue dispatch is issued."
+                : "Area advisory standby — run triage to generate general guidance"}
             </p>
           </div>
-          <span className="status-pill neutral">
-            Vehicle: {(triageData?.vehicle_selected || "Standby").replace(/_/g, " ")}
+          <span className={`status-pill ${!advisory ? "neutral" : advisory.advisory_level === "SEVERE" ? "critical" : advisory.advisory_level === "LOW" ? "positive" : "warning"}`}>
+            {advisory ? `Advisory: ${advisory.advisory_level}` : "Standby"}
           </span>
         </div>
 
-        <div className="table-wrap">
-          <table className="data-table">
-            <thead>
-              <tr>
-                <th style={{ width: "44%" }}>Ticket & directive</th>
-                <th style={{ width: "16%" }}>Priority</th>
-                <th className="num" style={{ width: "14%" }}>Depth</th>
-                <th className="num" style={{ width: "12%" }}>ETA</th>
-                <th style={{ width: "14%" }}>Action</th>
-              </tr>
-            </thead>
-            <tbody>
-              {tickets.length === 0 ? (
-                <tr>
-                  <td colSpan="5" style={{ textAlign: "center", color: "var(--muted)", padding: "28px 12px" }}>
-                    {projectionLoading || triageLoading
-                      ? "Evaluating inundated footprints from spatial join and queuing dispatch tickets..."
-                      : "No dispatch tickets queued. Click a point on photo or map to run DEM flood projection."}
-                  </td>
-                </tr>
-              ) : (
-                tickets.map((t) => {
-                  const isSent = Boolean(dispatchedIds[t.ticket_id]);
-                  return (
-                    <tr key={t.ticket_id}>
-                      <td>
-                        <div style={{ fontWeight: 500, color: "var(--text)", fontSize: "12.5px", display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
-                          <span className="mono-id">{t.ticket_id}</span>
-                          <span>· {t.building_name || `${(t.building_type || "building").replace(/^\w/, (c) => c.toUpperCase())} ${t.building_id}`}</span>
-                          {t.is_evac_center && (
-                            <span className="status-pill critical" style={{ fontSize: "10.5px", padding: "1px 5px", height: "18px" }}>
-                              <AlertTriangle size={10} /> <span>EVAC CENTER</span>
-                            </span>
-                          )}
-                          {t.infra_category === "education" && (
-                            <span className="status-pill warning" style={{ fontSize: "10.5px", padding: "1px 5px", height: "18px" }}>
-                              <School size={10} /> <span>School</span>
-                            </span>
-                          )}
-                          {t.infra_category === "healthcare" && (
-                            <span className="status-pill critical" style={{ fontSize: "10.5px", padding: "1px 5px", height: "18px" }}>
-                              <HeartPulse size={10} /> <span>Clinic</span>
-                            </span>
-                          )}
-                          {t.infra_category === "emergency_civic" && !t.is_evac_center && (
-                            <span className="status-pill neutral" style={{ fontSize: "10.5px", padding: "1px 5px", height: "18px" }}>
-                              <Landmark size={10} /> <span>Civic</span>
-                            </span>
-                          )}
-                        </div>
-                        <div style={{ fontSize: "12px", color: "var(--muted)", marginTop: "2px" }}>
-                          {t.tactical_directive}
-                        </div>
-                        {t.building_lat != null && t.building_lon != null && (
-                          <div style={{ fontSize: "11.5px", marginTop: "3px" }}>
-                            <a
-                              href={t.map_url || `https://www.openstreetmap.org/?mlat=${t.building_lat}&mlon=${t.building_lon}#map=18/${t.building_lat}/${t.building_lon}`}
-                              target="_blank"
-                              rel="noreferrer"
-                              style={{ color: "var(--accent-strong, #0369a1)" }}
-                            >
-                              Map: {Number(t.building_lat).toFixed(6)}, {Number(t.building_lon).toFixed(6)}
-                            </a>
-                            <span style={{ color: "var(--muted)" }}> · model estimate — verify on arrival</span>
-                          </div>
-                        )}
-                        <div style={{ display: "none" }}>
-                        </div>
-                      </td>
-                      <td>
-                        <span
-                          className={`status-pill ${t.priority === "CRITICAL" ? "critical" : "warning"
-                            }`}
-                          style={{ fontSize: "11px" }}
-                        >
-                          {t.priority}
-                        </span>
-                      </td>
-                      <td className="num">
-                        <span style={{ fontWeight: 500, color: "var(--text)" }}>
-                          {`~${t.flood_depth_m.toFixed(1)}`}
-                        </span>{" "}
-                        <span style={{ color: "var(--muted)", fontSize: "11.5px" }}>m</span>
-                      </td>
-                      <td className="num">
-                        <span style={{ fontWeight: 500, color: "var(--text)" }}>
-                          {t.eta_minutes}
-                        </span>{" "}
-                        <span style={{ color: "var(--muted)", fontSize: "11.5px" }}>min</span>
-                      </td>
-                      <td>
-                        <button
-                          type="button"
-                          className={isSent ? "btn-secondary" : "btn-primary"}
-                          onClick={() => handleDispatchToggle(t.ticket_id)}
-                          style={{
-                            fontSize: "11.5px",
-                            padding: "0 8px",
-                            height: "28px",
-                            width: "100%",
-                            justifyContent: "center",
-                            backgroundColor: isSent ? "var(--positive-soft)" : undefined,
-                            borderColor: isSent ? "var(--positive-border)" : undefined,
-                            color: isSent ? "var(--positive)" : undefined,
-                          }}
-                        >
-                          {isSent ? <Check size={12} /> : <Send size={11} />}
-                          <span>{isSent ? "Dispatched" : "Dispatch"}</span>
-                        </button>
-                      </td>
-                    </tr>
-                  );
-                })
+        {!advisory ? (
+          <p className="agent-empty">
+            {projectionLoading || triageLoading
+              ? "Building the area advisory from aggregate DEM depth-band counts..."
+              : "No advisory yet. Click a point on photo or map to run DEM flood projection and triage."}
+          </p>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
+            <div>
+              <strong style={{ fontSize: "13.5px", color: "var(--text)" }}>{advisory.headline}</strong>
+              <p style={{ margin: "4px 0 0 0", fontSize: "12.5px", color: "var(--muted)", lineHeight: 1.45 }}>
+                {advisory.summary_text}
+              </p>
+              {triageData?.inundated_structures?.wse_m != null && (
+                <p className="num" style={{ margin: "4px 0 0 0", fontSize: "11.5px", color: "var(--muted)", lineHeight: 1.45 }}>
+                  Counted at WSE {Number(triageData.inundated_structures.wse_m).toFixed(2)} m
+                  {floodProjection?.water_surface_elev_m != null &&
+                  Math.abs(Number(triageData.inundated_structures.wse_m) - Number(floodProjection.water_surface_elev_m)) > 0.02
+                    ? ` — Step 3 re-checked the depth and changed the water level from the Step 2 projection (${Number(floodProjection.water_surface_elev_m).toFixed(2)} m), so building colours on this page are recoloured to match these counts and may differ from Step 2. See the Step 1 agent log.`
+                    : " — same water level as the Step 2 projection, so these counts match the building colours."}
+                </p>
               )}
-            </tbody>
-          </table>
-        </div>
+            </div>
+
+            <div style={{ display: "flex", gap: "6px", flexWrap: "wrap" }}>
+              <span className="status-pill neutral num" style={{ fontSize: "11.5px" }}>{advisory.affected_structures} affected</span>
+              <span className="status-pill critical num" style={{ fontSize: "11.5px" }}>{advisory.critical_depth_count} critical &gt;1.5 m</span>
+              <span className="status-pill warning num" style={{ fontSize: "11.5px" }}>{advisory.medium_depth_count} medium 0.5–1.5 m</span>
+              <span className="status-pill neutral num" style={{ fontSize: "11.5px" }}>{advisory.low_depth_count} low &lt;0.5 m</span>
+              {advisory.affected_schools_count > 0 && (
+                <span className="status-pill warning num" style={{ fontSize: "11.5px" }}>{advisory.affected_schools_count} school(s) affected</span>
+              )}
+              {advisory.affected_healthcare_count > 0 && (
+                <span className="status-pill critical num" style={{ fontSize: "11.5px" }}>{advisory.affected_healthcare_count} health facility(ies) affected</span>
+              )}
+            </div>
+
+            <div
+              style={{
+                padding: "8px 12px",
+                borderRadius: "6px",
+                backgroundColor: "var(--surface)",
+                border: "1px solid var(--border)",
+                fontSize: "12.5px",
+                color: "var(--muted)",
+                lineHeight: 1.45,
+              }}
+            >
+              <strong style={{ color: "var(--text)" }}>Go to / staging point: </strong>
+              {advisory.evacuation_center_name} · Vehicle staged there: {(advisory.vehicle_selected || "").replace(/_/g, " ")} ·
+              Safe corridor <span className="num">{Math.round(advisory.route_distance_m)} m (~{Math.round(advisory.eta_minutes)} min)</span> ·{" "}
+              <span className="num">{advisory.severed_segments_count} flooded road segment(s) to avoid</span>
+              {advisory.compromised_evac_centers?.length > 0 && (
+                <div style={{ color: "var(--negative)", fontWeight: 600, marginTop: "4px" }}>
+                  Do NOT go to compromised centre(s): {advisory.compromised_evac_centers.join(", ")}
+                </div>
+              )}
+            </div>
+
+            {triageData?.evacuation_centers_status?.length > 0 && (
+              <div>
+                <h3 style={{ fontSize: "12.5px", fontWeight: 600, margin: "0 0 4px 0", color: "var(--text)" }}>
+                  Evacuation centres nearest to this incident
+                </h3>
+                <ul style={{ margin: 0, padding: 0, listStyle: "none", display: "flex", flexDirection: "column", gap: "4px" }}>
+                  {triageData.evacuation_centers_status.map((c) => (
+                    <li key={c.name} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "8px", fontSize: "12.5px", color: "var(--muted)", flexWrap: "wrap" }}>
+                      <span>
+                        {c.name} <span className="num">· {Math.round(c.distance_m)} m away</span>
+                      </span>
+                      {c.is_selected ? (
+                        <span className="status-pill positive" style={{ fontSize: "11px" }}>Selected — go here</span>
+                      ) : c.flooded ? (
+                        <span className="status-pill critical num" style={{ fontSize: "11px" }}>Flooded ~{Number(c.flood_depth_m).toFixed(1)} m — do not use</span>
+                      ) : (
+                        <span className="status-pill neutral" style={{ fontSize: "11px" }}>Dry</span>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+                <p style={{ margin: "4px 0 0 0", fontSize: "11.5px", color: "var(--muted)", lineHeight: 1.45 }}>
+                  The selected centre is the nearest dry one at the counted water level. Nearer centres marked flooded are
+                  skipped on purpose: their ground is below the water surface or inside the flood extent. This is why the
+                  chosen centre can stay the same for nearby incidents in one cluster, and changes when you move area.
+                </p>
+              </div>
+            )}
+
+            <div>
+              <h3 style={{ fontSize: "12.5px", fontWeight: 600, margin: "0 0 4px 0", color: "var(--text)" }}>Residents — do this now</h3>
+              <ul style={{ margin: 0, paddingLeft: "18px", fontSize: "12.5px", color: "var(--muted)", lineHeight: 1.5 }}>
+                {advisory.resident_actions.map((a, i) => (
+                  <li key={i}>{a}</li>
+                ))}
+              </ul>
+            </div>
+
+            <div>
+              <h3 style={{ fontSize: "12.5px", fontWeight: 600, margin: "0 0 4px 0", color: "var(--text)" }}>Responders — general dispatch (area, not addresses)</h3>
+              <ul style={{ margin: 0, paddingLeft: "18px", fontSize: "12.5px", color: "var(--muted)", lineHeight: 1.5 }}>
+                {advisory.responder_actions.map((a, i) => (
+                  <li key={i}>{a}</li>
+                ))}
+              </ul>
+            </div>
+
+            <div>
+              <h3 style={{ fontSize: "12.5px", fontWeight: 600, margin: "0 0 4px 0", color: "var(--text)" }}>Avoid</h3>
+              <ul style={{ margin: 0, paddingLeft: "18px", fontSize: "12.5px", color: "var(--muted)", lineHeight: 1.5 }}>
+                {advisory.avoid_actions.map((a, i) => (
+                  <li key={i}>{a}</li>
+                ))}
+              </ul>
+            </div>
+
+            <button
+              type="button"
+              className="btn-secondary"
+              onClick={handleCopyAdvisory}
+              style={{ fontSize: "12px", height: "30px", alignSelf: "flex-start" }}
+            >
+              {copied ? <Check size={12} /> : <Copy size={12} />}
+              <span>{copied ? "Advisory copied" : "Copy advisory for SMS / social media"}</span>
+            </button>
+          </div>
+        )}
 
         {/* Operational Disclaimer: Screening-Level Emergency Triage */}
         <div
@@ -249,7 +265,7 @@ export default function TriageCopilot({ triageData, floodProjection, projectionL
         >
           <Info size={14} color="var(--accent)" style={{ flexShrink: 0 }} />
           <span>
-            <strong style={{ color: "var(--text)" }}>Operational Notice:</strong> Screening-level emergency triage derived from 10 m DEM ground-vs-WSE elevation differentials, not an official regulatory flood map.
+            <strong style={{ color: "var(--text)" }}>Operational Notice:</strong> General screening-level guidance derived from 10 m DEM ground-vs-WSE elevation differentials and aggregate footprint counts, not an official regulatory flood map and not a rescue order for any specific address.
           </span>
         </div>
       </section>
