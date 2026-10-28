@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import maplibregl from "maplibre-gl";
 import { Navigation, Route, ShieldAlert } from "lucide-react";
+import { pickClickTarget, evacPopupHtml } from "../utils/mapClick.js";
 
 const LIGHT_MAP_STYLE = {
   version: 8,
@@ -54,6 +55,13 @@ export default function TriageMap({ triageData, floodProjection, boundaryGeojson
   const mapRef = useRef(null);
   const targetMarkerRef = useRef(null);
   const evacMarkerRef = useRef(null);
+  const popupRef = useRef(null);
+  const showEvacPopup = (lngLat, feature, fallbackName) => {
+    const map = mapRef.current;
+    if (!map) return;
+    if (!popupRef.current) popupRef.current = new maplibregl.Popup({ closeButton: true, closeOnClick: false, maxWidth: "320px" });
+    popupRef.current.setLngLat(lngLat).setHTML(evacPopupHtml(feature, fallbackName)).addTo(map);
+  };
   const [mapReady, setMapReady] = useState(false);
   // Buildings must come from the triage computation itself (same call that
   // counted the advisory), falling back to Step 2 only before triage runs.
@@ -118,10 +126,17 @@ export default function TriageMap({ triageData, floodProjection, boundaryGeojson
         });
 
         const bldgPopup = new maplibregl.Popup({ closeButton: true, closeOnClick: false, maxWidth: "320px" });
+        popupRef.current = bldgPopup;
         map.on("mouseenter", "triage-buildings-3d", () => { map.getCanvas().style.cursor = "pointer"; });
         map.on("mouseleave", "triage-buildings-3d", () => { map.getCanvas().style.cursor = ""; });
         map.on("click", "triage-buildings-3d", (e) => {
           if (!e.features || e.features.length === 0) return;
+          // An evac centre at this point (its label/circle sits over the
+          // footprints) wins: describe the labelled centre, not the building.
+          let evacFeatures = [];
+          try { evacFeatures = map.queryRenderedFeatures(e.point, { layers: ["triage-evac-circle", "triage-evac-halo"] }); } catch {}
+          const picked = pickClickTarget({ buildingFeatures: e.features, evacFeatures });
+          if (picked?.kind === "evac") { showEvacPopup(e.lngLat, picked.feature); return; }
           const props = e.features[0].properties;
           const isEvac = props.is_evac_center === true || props.is_evac_center === "true";
           const bName = props.building_name || (isEvac ? props.evac_center_name : "") || `${props.building_type || "Building"} (${props.building_id})`;
@@ -154,6 +169,12 @@ export default function TriageMap({ triageData, floodProjection, boundaryGeojson
         map.addSource("triage-evac", { type: "geojson", data: evacFC || EMPTY_FC });
         map.addLayer({ id: "triage-evac-halo", type: "circle", source: "triage-evac", paint: { "circle-radius": 12, "circle-color": "#0284c7", "circle-opacity": 0.22 } });
         map.addLayer({ id: "triage-evac-circle", type: "circle", source: "triage-evac", paint: { "circle-radius": ["case", ["boolean", ["get", "is_selected"], false], 9, 6.5], "circle-color": ["case", ["boolean", ["get", "flooded"], false], "#dc2626", ["boolean", ["get", "is_selected"], false], "#16a34a", "#0284c7"], "circle-stroke-color": "#ffffff", "circle-stroke-width": 2.5 } });
+        map.on("mouseenter", "triage-evac-circle", () => { map.getCanvas().style.cursor = "pointer"; });
+        map.on("mouseleave", "triage-evac-circle", () => { map.getCanvas().style.cursor = ""; });
+        map.on("click", "triage-evac-circle", (e) => {
+          if (!e.features || e.features.length === 0) return;
+          showEvacPopup(e.lngLat, e.features[0]);
+        });
 
         setMapReady(true);
       });
@@ -206,11 +227,22 @@ export default function TriageMap({ triageData, floodProjection, boundaryGeojson
       const name = triageData.evacuation_center_name || "Evacuation centre";
       if (!evacMarkerRef.current) {
         const el = document.createElement("div");
-        el.style.cssText = "display:inline-flex;align-items:center;gap:5px;background:#0284c7;color:#fff;padding:3px 8px;border-radius:4px;font-size:11px;font-weight:600;border:1.5px solid #fff;white-space:nowrap;pointer-events:none;";
+        el.style.cssText = "display:inline-flex;align-items:center;gap:5px;background:#0284c7;color:#fff;padding:3px 8px;border-radius:4px;font-size:11px;font-weight:600;border:1.5px solid #fff;white-space:nowrap;pointer-events:auto;cursor:pointer;";
         el.textContent = name;
+        el.title = name;
+        el.dataset.evacName = name;
+        el.addEventListener("click", (ev) => {
+          ev.stopPropagation();
+          const marker = evacMarkerRef.current;
+          showEvacPopup(marker ? marker.getLngLat() : [triageData.evacuation_center_lon, triageData.evacuation_center_lat], { properties: { name: el.dataset.evacName || name, is_selected: true } }, el.dataset.evacName || name);
+        });
         evacMarkerRef.current = new maplibregl.Marker({ element: el, anchor: "bottom" }).setLngLat([triageData.evacuation_center_lon, triageData.evacuation_center_lat]).addTo(map);
       } else {
         evacMarkerRef.current.setLngLat([triageData.evacuation_center_lon, triageData.evacuation_center_lat]);
+        const el = evacMarkerRef.current.getElement();
+        el.textContent = name;
+        el.title = name;
+        el.dataset.evacName = name;
       }
     }
 

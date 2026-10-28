@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import maplibregl from "maplibre-gl";
 import { sector, point, lineString } from "@turf/turf";
 import { Compass, Navigation, Globe, Lock, MapPin, Info, RefreshCw } from "lucide-react";
+import { pickClickTarget, evacPopupHtml } from "../utils/mapClick.js";
 
 const LIGHT_MAP_STYLE = {
   version: 8,
@@ -53,6 +54,13 @@ export default function MapViewcone({
   const [isCameraLocked, setIsCameraLocked] = useState(cameraPinPlaced);
   const isCameraLockedRef = useRef(cameraPinPlaced);
   const buildingClickHandledRef = useRef(false);
+  const popupRef = useRef(null);
+  const showEvacPopup = (lngLat, feature, fallbackName) => {
+    const map = mapRef.current;
+    if (!map) return;
+    if (!popupRef.current) popupRef.current = new maplibregl.Popup({ closeButton: true, closeOnClick: false, maxWidth: "320px" });
+    popupRef.current.setLngLat(lngLat).setHTML(evacPopupHtml(feature, fallbackName)).addTo(map);
+  };
   const hasInitialFlownRef = useRef(false);
   const hasRouteFlownRef = useRef(false);
   const lastCameraCenterRef = useRef(null);
@@ -306,6 +314,7 @@ export default function MapViewcone({
           closeOnClick: false,
           maxWidth: "320px",
         });
+        popupRef.current = bldgPopup;
 
         map.on("mouseenter", "buildings-3d", () => {
           map.getCanvas().style.cursor = "pointer";
@@ -317,6 +326,12 @@ export default function MapViewcone({
         map.on("click", "buildings-3d", (e) => {
           buildingClickHandledRef.current = true;
           if (!e.features || e.features.length === 0) return;
+          // An evac centre at this point (its label/circle sits over the
+          // footprints) wins: describe the labelled centre, not the building.
+          let evacFeatures = [];
+          try { evacFeatures = map.queryRenderedFeatures(e.point, { layers: ["evacuation-centers-circle", "evacuation-centers-halo"] }); } catch {}
+          const picked = pickClickTarget({ buildingFeatures: e.features, evacFeatures });
+          if (picked?.kind === "evac") { showEvacPopup(e.lngLat, picked.feature); return; }
           const props = e.features[0].properties;
           const isEvac = props.is_evac_center === true || props.is_evac_center === "true";
           const bName =
@@ -513,6 +528,11 @@ export default function MapViewcone({
         map.on("mouseleave", "evacuation-centers-circle", () => {
           map.getCanvas().style.cursor = "";
         });
+        map.on("click", "evacuation-centers-circle", (e) => {
+          buildingClickHandledRef.current = true;
+          if (!e.features || e.features.length === 0) return;
+          showEvacPopup(e.lngLat, e.features[0]);
+        });
 
         setMapReady(true);
       });
@@ -543,20 +563,29 @@ export default function MapViewcone({
     if (routeCoords && routeCoords.length >= 2) {
       const [startLon, startLat] = routeCoords[0];
       const evacName = triageData?.evacuation_center_name || "Designated Safe Shelter";
+      const markerLabel = `<span style="display:inline-block; width:6px; height:6px; background:#ffffff; border-radius:50%;"></span><span>${evacName} (Safe Shelter)</span>`;
       if (!evacMarkerRef.current) {
         const el = document.createElement("div");
         el.className = "evac-dest-marker";
         el.style.cssText =
-          "display: inline-flex; align-items: center; gap: 5px; background-color: #0284c7; color: #ffffff; padding: 3px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; border: 1.5px solid #ffffff; white-space: nowrap; pointer-events: none; margin-top: 10px;";
-        el.innerHTML = `
-          <span style="display:inline-block; width:6px; height:6px; background:#ffffff; border-radius:50%;"></span>
-          <span>${evacName} (Safe Shelter)</span>
-        `;
+          "display: inline-flex; align-items: center; gap: 5px; background-color: #0284c7; color: #ffffff; padding: 3px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; border: 1.5px solid #ffffff; white-space: nowrap; pointer-events: auto; cursor: pointer; margin-top: 10px;";
+        el.innerHTML = markerLabel;
+        el.title = evacName;
+        el.dataset.evacName = evacName;
+        el.addEventListener("click", (ev) => {
+          ev.stopPropagation();
+          const marker = evacMarkerRef.current;
+          showEvacPopup(marker ? marker.getLngLat() : [startLon, startLat], { properties: { name: el.dataset.evacName || evacName, is_selected: true } }, el.dataset.evacName || evacName);
+        });
         evacMarkerRef.current = new maplibregl.Marker({ element: el, anchor: "top" })
           .setLngLat([startLon, startLat])
           .addTo(map);
       } else {
         evacMarkerRef.current.setLngLat([startLon, startLat]);
+        const el = evacMarkerRef.current.getElement();
+        el.innerHTML = markerLabel;
+        el.title = evacName;
+        el.dataset.evacName = evacName;
       }
     } else if (evacMarkerRef.current) {
       evacMarkerRef.current.remove();
