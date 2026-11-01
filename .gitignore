@@ -34,6 +34,8 @@ frontend/dist/
 frontend/dist-ssr/
 frontend/.vite/
 *.local
+*.log
+tmp_*.log
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
@@ -45,6 +47,7 @@ pnpm-debug.log*
 !.env.example
 
 # HydroSight Runtime Caches & Generated GIS Outputs
+cache/
 outputs/
 backend/outputs/
 backend/cache/
@@ -54,9 +57,12 @@ backend/data/sample_photos/upload_*.jpg
 backend/data/sample_photos/upload_*.png
 backend/data/photos/upload_*.png
 backend/data/photos/*_muse_surge.jpg
+backend/data/sample_photos/*_surge.jpg
+rodriguez_dem_10m.tif
 
 # Design / Browser Inspector Artifacts
 .taste-skill/
+hydro_shots*/
 
 # OS & Editor Files
 .DS_Store

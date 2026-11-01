@@ -34,14 +34,28 @@ from backend.meta_agents import (
     get_scenarios,
     run_autonomous_triage_agent,
 )
+from backend.incidents_store import (
+    clear_all_incidents,
+    consolidate_flood_incidents,
+    delete_incident,
+    list_incidents,
+    save_or_update_incident,
+    seed_overlapping_demo_incidents,
+    update_incident_status,
+)
 from backend.schemas import (
     AnalyzePhotoResponse,
+    ConsolidateFloodRequest,
+    ConsolidateFloodResponse,
     DeletePhotoRequest,
     ProjectFloodRequest,
     ProjectFloodResponse,
+    SaveIncidentRequest,
+    SavedFloodIncident,
     ScenarioPreset,
     TriageRouteRequest,
     TriageRouteResponse,
+    UpdateIncidentStatusRequest,
 )
 
 app = FastAPI(
@@ -235,3 +249,57 @@ def get_dispatch_logs() -> dict:
         "count": len(entries),
         "recent_calls": entries[-10:],
     }
+
+
+@app.get("/api/v1/admin/incidents", response_model=List[SavedFloodIncident])
+def api_list_incidents() -> List[SavedFloodIncident]:
+    return list_incidents()
+
+
+@app.post("/api/v1/admin/incidents", response_model=SavedFloodIncident)
+def api_save_incident(req: SaveIncidentRequest) -> SavedFloodIncident:
+    try:
+        return save_or_update_incident(req)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.patch("/api/v1/admin/incidents/{incident_id}", response_model=SavedFloodIncident)
+def api_update_incident_status(incident_id: str, req: UpdateIncidentStatusRequest) -> SavedFloodIncident:
+    try:
+        updated = update_incident_status(incident_id, req.status, req.label)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    if updated is None:
+        raise HTTPException(status_code=404, detail=f"Incident {incident_id} not found")
+    return updated
+
+
+@app.delete("/api/v1/admin/incidents/{incident_id}")
+def api_delete_incident(incident_id: str) -> dict:
+    ok = delete_incident(incident_id)
+    return {"status": "ok", "deleted": ok, "incident_id": incident_id}
+
+
+@app.post("/api/v1/admin/incidents/seed", response_model=List[SavedFloodIncident])
+def api_seed_incidents() -> List[SavedFloodIncident]:
+    return seed_overlapping_demo_incidents()
+
+
+@app.post("/api/v1/admin/incidents/clear")
+def api_clear_incidents() -> dict:
+    removed = clear_all_incidents()
+    return {"status": "ok", "removed_count": removed}
+
+
+@app.post("/api/v1/admin/consolidate", response_model=ConsolidateFloodResponse)
+def api_consolidate_incidents(req: ConsolidateFloodRequest) -> ConsolidateFloodResponse:
+    return consolidate_flood_incidents(req)
+
+
+# Serve production React build (frontend/dist) when present (e.g. inside Docker container)
+FRONTEND_DIST_DIR = Path(__file__).resolve().parent.parent / "frontend" / "dist"
+if FRONTEND_DIST_DIR.exists() and (FRONTEND_DIST_DIR / "index.html").exists():
+    app.mount("/", StaticFiles(directory=str(FRONTEND_DIST_DIR), html=True), name="frontend_spa")
+
+

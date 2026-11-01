@@ -1,0 +1,14 @@
+services:
+  hydrosight:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: hydrosight-ai
+    ports:
+      - "8000:8000"
+      - "5173:8000"
+    environment:
+      - META_API_KEY=${META_API_KEY:-}
+      - META_API_BASE_URL=${META_API_BASE_URL:-https://api.meta.ai/v1}
+      - HYDROSIGHT_CACHE_ENABLED=${HYDROSIGHT_CACHE_ENABLED:-0}
+    restart: unless-stopped

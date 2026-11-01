@@ -1,5 +1,5 @@
 import React from "react";
-import { Layers, ShieldAlert, CheckCircle2 } from "lucide-react";
+import { Layers, ShieldAlert, CheckCircle2, PlusCircle, Check } from "lucide-react";
 
 export default function HeaderBar({
   floodProjection,
@@ -8,6 +8,15 @@ export default function HeaderBar({
   projectionLoading,
   cameraParams,
   analysisResult,
+  viewMode = "workbench",
+  onChangeViewMode,
+  savedIncidentsCount = 0,
+  overlappingClustersCount = 0,
+  onSaveToAdmin,
+  savedToast = false,
+  scenarios = [],
+  selectedScenarioId = "",
+  onSelectScenario,
 }) {
   const summary = floodProjection?.inundated_structures || {
     barangay: cameraParams?.barangay || "SAN JOSE",
@@ -44,13 +53,14 @@ export default function HeaderBar({
       <div className="header-top-row">
         {/* Brand identity */}
         <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
-          <div style={{ display: "flex", alignItems: "center", gap: "7px" }}>
-            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-              <rect width="24" height="24" rx="5" fill="#0f172a" />
-              <path d="M4 15 C8 11, 12 19, 20 12" stroke="#0e7490" strokeWidth="2.2" strokeLinecap="round" fill="none" />
-              <path d="M4 19 C8 15, 12 21, 20 16" stroke="#38bdf8" strokeWidth="1.6" strokeLinecap="round" fill="none" />
-              <circle cx="12" cy="7.5" r="2" fill="#b91c1c" />
-            </svg>
+          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+            <img
+              src="/hydrosight-logo.png"
+              alt="HydroSight AI Logo"
+              width="30"
+              height="30"
+              style={{ flexShrink: 0, objectFit: "contain" }}
+            />
             <span style={{ fontWeight: 600, fontSize: "14.5px", color: "var(--text)", letterSpacing: "-0.01em" }}>
               HydroSight AI
             </span>
@@ -74,6 +84,83 @@ export default function HeaderBar({
           </span>
         </div>
 
+        {/* Right Actions: Scenario Preset Selector, Save to Admin, and Workbench vs Admin Switcher */}
+        <div className="header-actions">
+          {viewMode === "workbench" && scenarios.length > 0 && onSelectScenario && (
+            <select
+              aria-label="Load Rodriguez flood scenario preset"
+              value={selectedScenarioId || ""}
+              onChange={(e) => {
+                if (e.target.value) onSelectScenario(e.target.value);
+              }}
+              style={{
+                height: "30px",
+                padding: "0 8px",
+                fontSize: "12px",
+                borderRadius: "6px",
+                border: "1px solid var(--border)",
+                backgroundColor: "var(--surface)",
+                color: "var(--text)",
+              }}
+            >
+              <option value="">Load sector preset (12 barangays)...</option>
+              {scenarios.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.name} ({s.water_depth_m.toFixed(2)}m)
+                </option>
+              ))}
+            </select>
+          )}
+
+          {viewMode === "workbench" && floodProjection && onSaveToAdmin && (
+            <button
+              type="button"
+              className="btn-secondary"
+              onClick={onSaveToAdmin}
+              style={{ height: "30px", fontSize: "12px", padding: "0 10px" }}
+              title="Save this photo and 3D flood projection as a new report in the Admin Consolidation Registry"
+            >
+              {savedToast ? <Check size={12} color="var(--positive)" /> : <PlusCircle size={12} />}
+              <span>{savedToast ? "Saved to Admin" : "Save to Admin Registry"}</span>
+            </button>
+          )}
+
+          {onChangeViewMode && (
+            <div className="segmented-bar" role="tablist" aria-label="Workspace mode">
+              <button
+                type="button"
+                role="tab"
+                aria-selected={viewMode === "workbench"}
+                className={`segmented-btn ${viewMode === "workbench" ? "active" : ""}`}
+                onClick={() => onChangeViewMode("workbench")}
+              >
+                <span>Operator Workbench</span>
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={viewMode === "admin"}
+                className={`segmented-btn ${viewMode === "admin" ? "active" : ""}`}
+                onClick={() => onChangeViewMode("admin")}
+              >
+                <span>Admin & Overlap Consolidation</span>
+                <span
+                  className="num"
+                  style={{
+                    padding: "0 5px",
+                    borderRadius: "999px",
+                    fontSize: "11px",
+                    backgroundColor: overlappingClustersCount > 0 ? "var(--warning-soft)" : "var(--active)",
+                    color: overlappingClustersCount > 0 ? "var(--warning)" : "var(--text)",
+                    border: "1px solid var(--border)",
+                  }}
+                >
+                  {savedIncidentsCount}
+                </span>
+              </button>
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Subtle Divider */}

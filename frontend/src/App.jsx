@@ -5,9 +5,21 @@ import PhotoInspector from "./components/PhotoInspector";
 import MapViewcone from "./components/MapViewcone";
 import TriageCopilot from "./components/TriageCopilot";
 import TriageMap from "./components/TriageMap";
+import AdminDashboard from "./components/AdminDashboard";
 import { formatNumber } from "./utils/format";
 
 export default function App() {
+  const [viewMode, setViewMode] = useState("workbench");
+  const [scenarios, setScenarios] = useState([]);
+  const [selectedScenarioId, setSelectedScenarioId] = useState("");
+
+  // Admin Registry & Overlapping Flood Consolidation State
+  const [adminIncidents, setAdminIncidents] = useState([]);
+  const [consolidationData, setConsolidationData] = useState(null);
+  const [adminLoading, setAdminLoading] = useState(false);
+  const [reconciliationMode, setReconciliationMode] = useState("confidence_weighted");
+  const [savedToast, setSavedToast] = useState(false);
+
   const [analysisResult, setAnalysisResult] = useState(null);
   const [customPhotoPreview, setCustomPhotoPreview] = useState(null);
   const [photoUploading, setPhotoUploading] = useState(false);
@@ -45,10 +57,98 @@ export default function App() {
   const sliderTimerRef = useRef(null);
   const triageFingerprintRef = useRef(null);
   const projAbortRef = useRef(null);
+  const activeIncidentIdRef = useRef(null);
+  const analysisResultRef = useRef(null);
+  useEffect(() => {
+    analysisResultRef.current = analysisResult;
+  }, [analysisResult]);
+
   const currentConfidence = analysisResult?.visual_gauge?.confidence_score ?? 0.91;
 
+  const refreshAdminRegistry = useCallback(
+    async (modeOverride = null) => {
+      const modeToUse = modeOverride || reconciliationMode;
+      setAdminLoading(true);
+      try {
+        const [incRes, consRes] = await Promise.all([
+          fetch("/api/v1/admin/incidents"),
+          fetch("/api/v1/admin/consolidate", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ reconciliation_mode: modeToUse }),
+          }),
+        ]);
+        if (incRes.ok) {
+          setAdminIncidents(await incRes.json());
+        }
+        if (consRes.ok) {
+          setConsolidationData(await consRes.json());
+        }
+      } catch {
+        // Ignore network errors
+      } finally {
+        setAdminLoading(false);
+      }
+    },
+    [reconciliationMode]
+  );
+
+  const persistIncidentToAdmin = useCallback(
+    async (params, projData, analysisOverride = null, forceNew = false) => {
+      const curAnalysis = analysisOverride || analysisResultRef.current;
+      if (!projData || !curAnalysis?.photo_url) return null;
+
+      let incId = activeIncidentIdRef.current;
+      if (!incId || forceNew) {
+        incId = `inc_${Math.random().toString(36).slice(2, 9)}`;
+        activeIncidentIdRef.current = incId;
+      }
+
+      try {
+        const saveRes = await fetch("/api/v1/admin/incidents", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            incident_id: incId,
+            barangay: projData.inundated_structures?.barangay || params.barangay || "SAN JOSE",
+            status: "active",
+            photo_url: curAnalysis.photo_url,
+            is_custom_upload: Boolean(curAnalysis.is_custom_upload),
+            execution_mode: curAnalysis.execution_mode || "live_inference",
+            masks: curAnalysis.masks || [],
+            visual_gauge: curAnalysis.visual_gauge || null,
+            cam_lat: params.cam_lat,
+            cam_lon: params.cam_lon,
+            azimuth_deg: params.azimuth_deg,
+            fov_deg: params.fov_deg,
+            click_u: params.click_u,
+            click_v: params.click_v ?? 0.56,
+            est_distance_m: params.est_distance_m,
+            water_depth_m: params.water_depth_m,
+            target_lat: projData.target_lat,
+            target_lon: projData.target_lon,
+            ground_dem_m: projData.ground_dem_m,
+            water_surface_elev_m: projData.water_surface_elev_m,
+            dem_uncertainty_m: projData.dem_uncertainty_m ?? 0.5,
+            flood_area_sqm: projData.flood_area_sqm,
+            flood_geojson: projData.flood_geojson,
+            inundated_structures: projData.inundated_structures,
+          }),
+        });
+        if (saveRes.ok) {
+          refreshAdminRegistry();
+          return await saveRes.json();
+        }
+      } catch {
+        // Ignore
+      }
+      return null;
+    },
+    [refreshAdminRegistry]
+  );
+
   const runFloodProjection = useCallback(
-    async (params) => {
+    async (params, analysisOverride = null) => {
       setProjectionLoading(true);
       try {
         if (projAbortRef.current) {
@@ -83,6 +183,12 @@ export default function App() {
           if (resolvedBrgy && resolvedBrgy !== params.barangay) {
             setCameraParams((prev) => ({ ...prev, barangay: resolvedBrgy }));
           }
+          // Auto-save this photo + projection into the Admin Consolidation Registry
+          persistIncidentToAdmin(
+            { ...params, barangay: resolvedBrgy || params.barangay },
+            projData,
+            analysisOverride
+          );
           return projData;
         }
       } catch (err) {
@@ -92,7 +198,7 @@ export default function App() {
       }
       return null;
     },
-    []
+    [persistIncidentToAdmin]
   );
 
   const runTriageDispatch = useCallback(
@@ -110,6 +216,7 @@ export default function App() {
         water_depth_m: params.water_depth_m,
         barangay: params.barangay,
         confidence: currentConfidence,
+        photo_url: analysisResult?.photo_url ?? null,
         target_lat: projForFingerprint?.target_lat ?? null,
         target_lon: projForFingerprint?.target_lon ?? null,
         wse_m: projForFingerprint?.water_surface_elev_m ?? null,
@@ -133,7 +240,8 @@ export default function App() {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            scenario_id: "live_operator",
+            scenario_id: analysisResult?.scenario_id || "live_operator",
+            photo_url: analysisResult?.photo_url || null,
             cam_lat: params.cam_lat,
             cam_lon: params.cam_lon,
             target_lat: targetLat,
@@ -157,7 +265,7 @@ export default function App() {
         setTriageLoading(false);
       }
     },
-    [floodProjection, currentConfidence, triageData]
+    [floodProjection, currentConfidence, triageData, analysisResult]
   );
 
   const canGoToStep2 = Boolean(analysisResult || customPhotoPreview);
@@ -191,9 +299,10 @@ export default function App() {
     setTriageData(null);
     setPhotoUploadError(null);
     try {
-      const [bndRes, ecRes] = await Promise.all([
+      const [bndRes, ecRes, scenRes] = await Promise.all([
         fetch("/api/v1/boundary"),
         fetch("/api/v1/evacuation-centers"),
+        fetch("/api/v1/scenarios"),
       ]);
       if (bndRes.ok) {
         setBoundaryGeojson(await bndRes.json());
@@ -201,12 +310,16 @@ export default function App() {
       if (ecRes.ok) {
         setEvacCentersGeojson(await ecRes.json());
       }
+      if (scenRes.ok) {
+        setScenarios(await scenRes.json());
+      }
+      await refreshAdminRegistry();
     } catch (err) {
       setInitialError(err?.message || "Failed to connect to HydroSight AI backend.");
     } finally {
       setIsInitialLoading(false);
     }
-  }, []);
+  }, [refreshAdminRegistry]);
 
   useEffect(() => {
     initApp();
@@ -273,6 +386,8 @@ export default function App() {
     setFloodProjection(null);
     setTriageData(null);
     triageFingerprintRef.current = null;
+    activeIncidentIdRef.current = `inc_${Math.random().toString(36).slice(2, 9)}`;
+    setSelectedScenarioId("");
     setCameraPinPlaced(false);
 
     try {
@@ -288,6 +403,7 @@ export default function App() {
       if (res.ok) {
         const data = await res.json();
         setAnalysisResult(data);
+        analysisResultRef.current = data;
         const resolvedBrgy = data.resolved_location?.barangay;
         if (resolvedBrgy) {
           setCameraParams((prev) => ({ ...prev, barangay: resolvedBrgy }));
@@ -330,7 +446,7 @@ export default function App() {
         if (useGeo) {
           // Generate the Step 2 projection from the geotag point right away,
           // so going to Step 2 shows an updated map, not just a moved pin.
-          runFloodProjection(nextParams);
+          runFloodProjection(nextParams, data);
         }
       } else {
         setPhotoUploadError(`Upload analysis failed (${res.status}). Using local photo preview.`);
@@ -340,6 +456,166 @@ export default function App() {
     } finally {
       setPhotoUploading(false);
     }
+  };
+
+  const handleSelectScenario = async (scenId) => {
+    const preset = scenarios.find((s) => s.id === scenId);
+    if (!preset) return;
+    setSelectedScenarioId(scenId);
+    setPhotoUploading(true);
+    setPhotoUploadError(null);
+    setGeotagNotice(null);
+    if (customPhotoPreview && customPhotoPreview.startsWith("blob:")) {
+      try {
+        URL.revokeObjectURL(customPhotoPreview);
+      } catch {}
+    }
+    setCustomPhotoPreview(null);
+    activeIncidentIdRef.current = `inc_${scenId}`;
+
+    const nextParams = {
+      cam_lat: preset.cam_lat,
+      cam_lon: preset.cam_lon,
+      azimuth_deg: preset.azimuth_deg,
+      fov_deg: preset.fov_deg,
+      click_u: preset.default_click_u,
+      click_v: preset.default_click_v,
+      est_distance_m: preset.est_distance_m,
+      water_depth_m: preset.water_depth_m,
+      barangay: preset.barangay,
+    };
+    setCameraParams(nextParams);
+
+    try {
+      const res = await fetch("/api/v1/analyze-photo", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ scenario_id: scenId }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setAnalysisResult(data);
+        analysisResultRef.current = data;
+        setCameraPinPlaced(true);
+        await runFloodProjection(nextParams, data);
+      }
+    } catch {
+      // Ignore
+    } finally {
+      setPhotoUploading(false);
+    }
+  };
+
+  const handleSaveManualSnapshotToAdmin = async () => {
+    if (!floodProjection || !analysisResult) return;
+    await persistIncidentToAdmin(cameraParams, floodProjection, analysisResult, true);
+    setSavedToast(true);
+    setTimeout(() => setSavedToast(false), 2000);
+  };
+
+  const handleChangeReconciliationMode = async (newMode) => {
+    setReconciliationMode(newMode);
+    await refreshAdminRegistry(newMode);
+  };
+
+  const handleSeedDemoIncidents = async () => {
+    setAdminLoading(true);
+    try {
+      await fetch("/api/v1/admin/incidents/seed", { method: "POST" });
+      await refreshAdminRegistry();
+    } catch {} finally {
+      setAdminLoading(false);
+    }
+  };
+
+  const handleClearAllIncidents = async () => {
+    setAdminLoading(true);
+    try {
+      await fetch("/api/v1/admin/incidents/clear", { method: "POST" });
+      await refreshAdminRegistry();
+    } catch {} finally {
+      setAdminLoading(false);
+    }
+  };
+
+  const handleUpdateIncidentStatus = async (incidentId, status) => {
+    setAdminLoading(true);
+    try {
+      await fetch(`/api/v1/admin/incidents/${incidentId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status }),
+      });
+      await refreshAdminRegistry();
+    } catch {} finally {
+      setAdminLoading(false);
+    }
+  };
+
+  const handleDeleteIncident = async (incidentId) => {
+    setAdminLoading(true);
+    try {
+      await fetch(`/api/v1/admin/incidents/${incidentId}`, { method: "DELETE" });
+      await refreshAdminRegistry();
+    } catch {} finally {
+      setAdminLoading(false);
+    }
+  };
+
+  const handleLoadIncidentIntoWorkbench = (inc) => {
+    if (!inc) return;
+    activeIncidentIdRef.current = inc.incident_id;
+    if (customPhotoPreview && customPhotoPreview.startsWith("blob:")) {
+      try {
+        URL.revokeObjectURL(customPhotoPreview);
+      } catch {}
+    }
+    setCustomPhotoPreview(null);
+    setGeotagNotice(null);
+    setPhotoUploadError(null);
+
+    const restoredAnalysis = {
+      scenario_id: inc.incident_id,
+      photo_url: inc.photo_url,
+      masks: inc.masks || [],
+      visual_gauge: inc.visual_gauge || {
+        reference_object_detected: "Saved Reference",
+        reference_standard_height_m: 1.6,
+        submerged_ratio: 0.75,
+        estimated_water_depth_m: inc.water_depth_m,
+        estimated_distance_from_camera_m: inc.est_distance_m,
+        recommended_click_u: inc.click_u,
+        recommended_click_v: inc.click_v,
+        confidence_score: 0.9,
+        hydrological_reasoning: `Restored from Admin Registry (${inc.label}).`,
+      },
+      prompts_used: ["water", "person", "car", "tricycle", "gate"],
+      model_chain: ["sam-3.1", "muse-spark-1.3"],
+      cached: false,
+      fallback_used: false,
+      execution_mode: inc.execution_mode || "live_inference",
+      is_custom_upload: Boolean(inc.is_custom_upload),
+    };
+    setAnalysisResult(restoredAnalysis);
+    analysisResultRef.current = restoredAnalysis;
+
+    const nextParams = {
+      cam_lat: inc.cam_lat,
+      cam_lon: inc.cam_lon,
+      azimuth_deg: inc.azimuth_deg,
+      fov_deg: inc.fov_deg,
+      click_u: inc.click_u,
+      click_v: inc.click_v ?? 0.56,
+      est_distance_m: inc.est_distance_m,
+      water_depth_m: inc.water_depth_m,
+      barangay: inc.barangay,
+    };
+    setCameraParams(nextParams);
+    setCameraPinPlaced(true);
+    setTriageData(null);
+    setViewMode("workbench");
+    setActiveStep(2);
+    runFloodProjection(nextParams, restoredAnalysis);
   };
 
   const handleDeleteCustomPhoto = async () => {
@@ -407,6 +683,20 @@ export default function App() {
           triageLoading={triageLoading}
           projectionLoading={projectionLoading}
           cameraParams={cameraParams}
+          viewMode={viewMode}
+          onChangeViewMode={(m) => {
+            setViewMode(m);
+            if (m === "admin") {
+              refreshAdminRegistry();
+            }
+          }}
+          savedIncidentsCount={adminIncidents.length}
+          overlappingClustersCount={consolidationData?.overlapping_clusters_count || 0}
+          onSaveToAdmin={handleSaveManualSnapshotToAdmin}
+          savedToast={savedToast}
+          scenarios={scenarios}
+          selectedScenarioId={selectedScenarioId}
+          onSelectScenario={handleSelectScenario}
         />
         {initialError && (
           <div
@@ -436,6 +726,26 @@ export default function App() {
           </div>
         )}
 
+        {viewMode === "admin" ? (
+          <AdminDashboard
+            incidents={adminIncidents}
+            consolidation={consolidationData}
+            adminLoading={adminLoading}
+            reconciliationMode={reconciliationMode}
+            onChangeReconciliationMode={handleChangeReconciliationMode}
+            onRefreshAdmin={() => refreshAdminRegistry()}
+            onSeedDemoIncidents={handleSeedDemoIncidents}
+            onClearAllIncidents={handleClearAllIncidents}
+            onUpdateIncidentStatus={handleUpdateIncidentStatus}
+            onDeleteIncident={handleDeleteIncident}
+            onLoadIncidentIntoWorkbench={handleLoadIncidentIntoWorkbench}
+            onSaveCurrentToAdmin={handleSaveManualSnapshotToAdmin}
+            canSaveCurrent={Boolean(analysisResult && floodProjection)}
+            boundaryGeojson={boundaryGeojson}
+            evacCentersGeojson={evacCentersGeojson}
+          />
+        ) : (
+          <>
         {/* 5-Column Hydrological KPI Ribbon */}
         <section className="kpi-strip" aria-label="Key hydrological and rescue metrics">
           <div className="kpi-cell">
@@ -792,6 +1102,8 @@ export default function App() {
             </a>
           </div>
         </div>
+          </>
+        )}
       </main>
     </div>
   );

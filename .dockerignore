@@ -1,0 +1,46 @@
+# Python / Virtualenvs
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+ENV/
+env/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Node / Frontend build caches
+node_modules/
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+*.log
+tmp_*.log
+
+# Git & IDE / Agent Folders
+.git/
+.agents/
+.taste-skill/
+.vscode/
+.idea/
+hydro_shots*/
+
+# Runtime outputs, caches & temporary uploads
+cache/
+outputs/
+backend/outputs/
+backend/cache/
+backend/data/*_enriched.parquet
+backend/data/photos/upload_*.jpg
+backend/data/sample_photos/upload_*.jpg
+backend/data/sample_photos/upload_*.png
+backend/data/photos/upload_*.png
+backend/data/photos/*_muse_surge.jpg
+backend/data/sample_photos/*_surge.jpg
+rodriguez_dem_10m.tif
+
+# Secrets
+.env
+.env.*
+!.env.example

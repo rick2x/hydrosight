@@ -15,7 +15,8 @@
 2. **Visual Perception (`sam-3.1`):** Performs zero-shot promptable concept segmentation on the street photo to extract binary masks and bounding boxes for `"floodwater"` and submerged vertical scale reference objects (`"vehicle wheel"`, `"car"`, `"tricycle"`, `"person"`, `"gate"`, `"first-floor door"`).
 3. **Visual Hydrological Gauging (`muse-spark-1.3`):** Analyzes the annotated image and SAM 3.1 masks to estimate water depth in meters (`water_depth_m`) and forward distance from the camera (`distance_from_camera_m`) in strict JSON.
 4. **Raycast-to-DEM Physics Engine (`Python / Rasterio / GeoPandas`):** Projects the camera coordinate along the target ray bearing onto a local Digital Elevation Model (`rodriguez_srtmgl1_10m_utm51n.tif` in `EPSG:32651`), samples ground elevation ($Z_{DEM}$), computes Water Surface Elevation ($WSE = Z_{DEM} + h_w$), flood-fills the connected lowland catchment where $DEM \le WSE$, and vectorizes the result into downloadable `.shp` and `.geojson` files.
-5. **Autonomous Triage & Routing (`muse-spark-1.3` + `muse-glimmer`):** Uses tool-calling over an `OSMnx`/`NetworkX` road graph to clip flooded road segments (`depth > 0.5m`), compute safe rescue routes, and generate one general barangay flood advisory (what residents and responders should do; never a per-house rescue dispatch).
+5. **Autonomous Triage & Routing (`muse-spark-1.3` Tool-Calling):** Uses multi-turn function-calling over an `OSMnx`/`NetworkX` road graph to verify dry evacuation centers, clip flooded road segments (`depth > 0.5m` for wheeled rescue trucks; autonomous retry with `amphibious_rubber_boat` when primary routes are severed), compute safe rescue routes, and generate one general barangay flood advisory (what residents and responders should do; never a per-house rescue dispatch).
+6. **Admin Flood Registry & Overlapping Prediction Consolidation (`backend/incidents_store.py`):** Groups spatially intersecting reports in `EPSG:32651`, reconciles overlapping WSE measurements via 2D Inverse-Distance + SAM 3.1 confidence weighting (`confidence_weighted`, `max_envelope`, or `highest_confidence`), flags high-variance WSE outliers, and evaluates OSM buildings once against the unified flood surface so structures are never double-counted.
 
 ---
 
@@ -34,7 +35,8 @@ rodriguez-flood-triage/
 │   ├── cache/                         # SHA256-keyed local JSON cache for Meta API calls
 │   ├── main.py                        # FastAPI server & route handlers
 │   ├── geo_engine.py                  # Camera raycast, DEM flood-fill, Shapefile export, OSMnx routing
-│   ├── meta_agents.py                 # SAM 3.1 segmentation, Muse Spark tool-calling, Muse Glimmer
+│   ├── meta_agents.py                 # SAM 3.1 segmentation, Muse Spark 1.3 visual gauge & tool-calling agent
+│   ├── incidents_store.py             # Persistent Admin registry & overlapping flood consolidation engine
 │   ├── schemas.py                     # Pydantic request/response & strict JSON schemas
 │   └── requirements.txt               # Python dependencies
 └── frontend/
@@ -237,11 +239,13 @@ Provide `muse-spark-1.3` with the following tools:
 
 | Method | Endpoint | Purpose |
 | :--- | :--- | :--- |
-| `GET` | `/api/v1/scenarios` | Returns 3 pre-configured Rodriguez flood scenarios (Kasiglahan Village, Brgy. San Jose, Montalban Town Center) with preset camera coordinates, azimuths, and sample photo URLs. |
+| `GET` | `/api/v1/scenarios` | Returns 12 pre-configured Rodriguez flood scenarios covering all 11 barangays with preset camera coordinates, azimuths, and sample photo URLs. |
 | `POST` | `/api/v1/analyze-photo` | Accepts image upload or scenario ID; scans raw EXIF for a GPS geotag (`photo_geotag`, pin pre-placement only, EXIF stripped from the stored copy); runs `sam-3.1` + `muse-spark-1.3` visual gauge; returns masks and `VisualGaugeResult`. |
 | `POST` | `/api/v1/project-flood` | Accepts `{ cam_lat, cam_lon, azimuth_deg, fov_deg, click_u, est_distance_m, water_depth_m }`; runs `project_photo_to_flood_shapefile()`; returns GeoJSON layers + Shapefile download link. |
 | `POST` | `/api/v1/triage-route` | Runs `muse-spark-1.3` tool-calling to compute safe evacuation routes and issue one general barangay `AreaAdvisory` (no per-building dispatch tickets). |
 | `GET` | `/api/v1/download-shp/{run_id}` | Streams the zipped `.shp` bundle (`flood_extent_{run_id}.zip`). |
+| `GET/POST/PATCH/DELETE` | `/api/v1/admin/incidents` | Lists, saves, updates status (`active`/`verified`/`excluded`), seeds demo incidents, or deletes saved flood reports in the Admin Registry. |
+| `POST` | `/api/v1/admin/consolidate` | Clusters spatially overlapping flood predictions in `EPSG:32651`, reconciles WSE (`confidence_weighted`, `max_envelope`, `highest_confidence`), flags WSE outliers, and returns a de-duplicated 3D flood surface and building summary. |
 
 ---
 
@@ -256,7 +260,7 @@ Provide `muse-spark-1.3` with the following tools:
      - Flood Extent GeoJSON polygon layer (semi-transparent cyan/blue fill).
      - 3D Extruded OSM Building footprints (`fill-extrusion-color` dynamically styled by flood depth: Green `0m`, Amber `0.5m`, Red `>1.5m`).
      - Safe Rescue Route GeoJSON line layer (animated dashed neon green).
-   - **Bottom Drawer (`TriageCopilot.jsx`):** Displays `muse-spark-1.3` spatial reasoning logs and `muse-glimmer` priority rescue dispatch cards.
+   - **Bottom Drawer (`TriageCopilot.jsx`):** Displays `muse-spark-1.3` spatial reasoning logs, multi-turn tool-call traces, and general barangay flood advisories.
 
 ---
 

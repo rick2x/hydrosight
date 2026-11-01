@@ -146,6 +146,7 @@ class ProjectFloodResponse(BaseModel):
 
 class TriageRouteRequest(BaseModel):
     scenario_id: str = Field("kasiglahan_village", description="Scenario identifier")
+    photo_url: Optional[str] = Field(None, description="Uploaded or scenario photo URL from Step 1 so Step 3 self-check analyzes the exact same photo")
     cam_lat: float = Field(..., ge=-90.0, le=90.0, description="Incident camera latitude")
     cam_lon: float = Field(..., ge=-180.0, le=180.0, description="Incident camera longitude")
     target_lat: float = Field(..., ge=-90.0, le=90.0, description="Projected flood point latitude")
@@ -260,3 +261,148 @@ class ScenarioPreset(BaseModel):
     alert_level: str
     visual_gauge: VisualGaugeResult
     sam_masks: List[SAMMaskObject]
+
+
+# ---------------------------------------------------------------------------
+# Admin Dashboard & Multi-Incident Overlapping Flood Consolidation Schemas
+# ---------------------------------------------------------------------------
+
+class SavedFloodIncident(BaseModel):
+    incident_id: str
+    created_at: str
+    updated_at: str
+    label: str
+    barangay: str
+    status: str = Field("active", description="active | verified | excluded")
+    photo_url: str
+    is_custom_upload: bool = False
+    execution_mode: str = "live_inference"
+    masks: List[SAMMaskObject] = Field(default_factory=list)
+    visual_gauge: Optional[VisualGaugeResult] = None
+    cam_lat: float
+    cam_lon: float
+    azimuth_deg: float
+    fov_deg: float = 65.0
+    click_u: float = 0.5
+    click_v: float = 0.56
+    est_distance_m: float = 38.0
+    water_depth_m: float
+    target_lat: float
+    target_lon: float
+    ground_dem_m: float
+    water_surface_elev_m: float
+    dem_uncertainty_m: float = 0.5
+    flood_area_sqm: float
+    flood_geojson: Dict[str, Any]
+    inundated_structures: InundatedStructureSummary
+    download_shp_url: str
+
+
+class SaveIncidentRequest(BaseModel):
+    incident_id: Optional[str] = None
+    label: Optional[str] = None
+    barangay: Optional[str] = None
+    status: str = "active"
+    photo_url: str
+    is_custom_upload: bool = False
+    execution_mode: str = "live_inference"
+    masks: List[SAMMaskObject] = Field(default_factory=list)
+    visual_gauge: Optional[VisualGaugeResult] = None
+    cam_lat: float
+    cam_lon: float
+    azimuth_deg: float
+    fov_deg: float = 65.0
+    click_u: float = 0.5
+    click_v: float = 0.56
+    est_distance_m: float = 38.0
+    water_depth_m: float
+    target_lat: Optional[float] = None
+    target_lon: Optional[float] = None
+    ground_dem_m: Optional[float] = None
+    water_surface_elev_m: Optional[float] = None
+    dem_uncertainty_m: Optional[float] = None
+    flood_area_sqm: Optional[float] = None
+    flood_geojson: Optional[Dict[str, Any]] = None
+    inundated_structures: Optional[InundatedStructureSummary] = None
+
+
+class UpdateIncidentStatusRequest(BaseModel):
+    status: str = Field(..., description="active | verified | excluded")
+    label: Optional[str] = None
+
+
+class OverlapPairMetric(BaseModel):
+    incident_a_id: str
+    incident_b_id: str
+    incident_a_label: str
+    incident_b_label: str
+    barangay: str
+    overlap_area_sqm: float
+    iou_ratio: float
+    target_separation_m: float
+    wse_a_m: float
+    wse_b_m: float
+    wse_delta_m: float
+    discrepancy_flagged: bool = Field(False, description="True if WSE difference exceeds combined DEM vertical uncertainty")
+    resolution_note: str
+
+
+class OverlapClusterSummary(BaseModel):
+    cluster_id: str
+    barangay: str
+    incident_ids: List[str]
+    incident_labels: List[str]
+    incident_count: int
+    is_overlapping: bool
+    reconciliation_mode: str
+    wse_min_m: float
+    wse_max_m: float
+    wse_spread_m: float
+    reconciled_wse_m: float
+    reconciled_depth_mean_m: float
+    reconciled_depth_max_m: float
+    raw_sum_area_sqm: float
+    consolidated_area_sqm: float
+    overlap_eliminated_sqm: float
+    discrepancy_flagged: bool = False
+    outlier_incident_id: Optional[str] = None
+    resolution_explanation: str
+    evacuation_center_name: str = ""
+    evacuation_center_lat: float = 0.0
+    evacuation_center_lon: float = 0.0
+    vehicle_selected: str = "6x6 High-Water Rescue Truck"
+    route_distance_m: float = 0.0
+    eta_minutes: float = 0.0
+
+
+class ConsolidateFloodRequest(BaseModel):
+    incident_ids: Optional[List[str]] = Field(None, description="Specific incident IDs to consolidate; if None, consolidates all active/verified incidents")
+    reconciliation_mode: str = Field("confidence_weighted", description="confidence_weighted | max_envelope | highest_confidence")
+
+
+class ConsolidateFloodResponse(BaseModel):
+    run_id: str
+    reconciliation_mode: str
+    total_saved_incidents: int
+    active_consolidated_incidents: int
+    overlapping_clusters_count: int
+    overlap_pairs: List[OverlapPairMetric]
+    clusters: List[OverlapClusterSummary]
+    raw_sum_flood_area_sqm: float
+    consolidated_flood_area_sqm: float
+    overlap_area_eliminated_sqm: float
+    raw_sum_affected_structures: int
+    consolidated_affected_structures: int
+    duplicate_structures_eliminated: int
+    inundated_structures: InundatedStructureSummary
+    consolidated_flood_geojson: Dict[str, Any]
+    individual_outlines_geojson: Dict[str, Any]
+    intersection_zones_geojson: Dict[str, Any]
+    camera_stations_geojson: Dict[str, Any]
+    buildings_geojson: Dict[str, Any]
+    routes_geojson: Dict[str, Any]
+    severed_roads_geojson: Dict[str, Any]
+    area_advisory: AreaAdvisory
+    download_shp_url: str
+    synthesis_headline: str
+    synthesis_reasoning: str

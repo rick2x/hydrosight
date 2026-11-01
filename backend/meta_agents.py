@@ -618,34 +618,31 @@ SCENARIO_PRESETS: Dict[str, ScenarioPreset] = {
 
 def ensure_sample_photos() -> None:
     """
-    Ensures real flood photos are present for all demo scenarios.
-    Synthetic cartoon drawings are completely eliminated.
+    Ensures real flood photos are present for all 12 built-in Rodriguez demo scenarios.
+    Uses committed scenario photographs (`kasiglahan_village.jpg`, `burgos_lowland.jpg`,
+    `montalban_town_center.jpg`, etc.) as donor fallbacks if any scenario photo is missing,
+    without relying on temporary `upload_*.jpg` files.
     """
     import shutil
     PHOTOS_DIR.mkdir(parents=True, exist_ok=True)
-    real_fallback = PHOTOS_DIR / "upload_1818cea705.jpg"
-    if not real_fallback.exists():
-        candidates = list(PHOTOS_DIR.glob("upload_*.jpg"))
+    primary_donors = [
+        PHOTOS_DIR / "kasiglahan_village.jpg",
+        PHOTOS_DIR / "burgos_lowland.jpg",
+        PHOTOS_DIR / "montalban_town_center.jpg",
+    ]
+    real_fallback = next((p for p in primary_donors if p.exists() and p.stat().st_size >= 40000), None)
+    if real_fallback is None:
+        candidates = [
+            p for p in sorted(PHOTOS_DIR.glob("*.jpg"))
+            if not p.name.startswith("upload_") and p.stat().st_size >= 40000
+        ]
         real_fallback = candidates[0] if candidates else None
-
-    # Map the primary presets to their genuine flood photos
-    demo_map = {
-        "kasiglahan_village": "upload_1818cea705.jpg",
-        "burgos_lowland": "upload_3794a1e660.jpg",
-        "montalban_town_center": "upload_7741ab121f.jpg",
-    }
 
     for scen_id in SCENARIO_PRESETS:
         normal_path = PHOTOS_DIR / f"{scen_id}.jpg"
-
-        # Ensure normal photo is a real photograph
         if not normal_path.exists() or normal_path.stat().st_size < 40000:
-            donor_filename = demo_map.get(scen_id, "upload_1818cea705.jpg")
-            donor_path = PHOTOS_DIR / donor_filename
-            if not donor_path.exists() and real_fallback:
-                donor_path = real_fallback
-            if donor_path and donor_path.exists():
-                shutil.copy2(donor_path, normal_path)
+            if real_fallback and real_fallback.exists() and real_fallback != normal_path:
+                shutil.copy2(real_fallback, normal_path)
 
 
 
@@ -1775,9 +1772,13 @@ def run_autonomous_triage_agent(req: TriageRouteRequest) -> TriageRouteResponse:
     agent_steps: List[AgentStepLog] = []
 
     t1 = time.perf_counter()
-    scenario_img = PHOTOS_DIR / f"{preset.id}.jpg"
-    if not scenario_img.exists():
-        scenario_img = PHOTOS_DIR / "kasiglahan_village.jpg"
+    custom_img = (PHOTOS_DIR / Path(req.photo_url).name) if req.photo_url else None
+    if custom_img is not None and custom_img.exists() and custom_img.is_file():
+        scenario_img = custom_img
+    else:
+        scenario_img = PHOTOS_DIR / f"{preset.id}.jpg"
+        if not scenario_img.exists():
+            scenario_img = PHOTOS_DIR / "kasiglahan_village.jpg"
 
     analysis_res = analyze_water_level_with_sam3(
         scenario_id=req.scenario_id,
@@ -1835,7 +1836,7 @@ def run_autonomous_triage_agent(req: TriageRouteRequest) -> TriageRouteResponse:
         else:
             step1_out = (
                 f"Live Perception Verified: sam-3.1 + muse-spark-1.3 segmented {len(analysis_res.masks)} visual masks "
-                f"in real photo ({preset.id}.jpg), grounding '{analysis_res.visual_gauge.reference_object_detected}' "
+                f"in real photo ({scenario_img.name}), grounding '{analysis_res.visual_gauge.reference_object_detected}' "
                 f"at {analysis_res.visual_gauge.submerged_ratio * 100:.0f}% submergence -> depth {req.water_depth_m:.2f}m "
                 f"(confidence {analysis_res.visual_gauge.confidence_score:.2f})."
             )
