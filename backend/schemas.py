@@ -11,6 +11,8 @@ class VisualGaugeResult(BaseModel):
     recommended_click_u: float = Field(..., ge=0.0, le=1.0, description="Normalized horizontal X position [0.0-1.0] of reference object")
     recommended_click_v: float = Field(..., ge=0.0, le=1.0, description="Normalized vertical Y position [0.0-1.0] of waterline at object")
     confidence_score: float = Field(..., ge=0.0, le=1.0, description="Confidence from 0.0 to 1.0")
+    scene_description: Optional[str] = Field(None, description="Concise visual description of what is observed in the uploaded flood photograph")
+    conclusion_summary: Optional[str] = Field(None, description="Clear step-by-step summary of how the visual depth conclusion was derived from the observed reference object and waterline")
     hydrological_reasoning: str = Field(..., description="Concise explanation of depth calculation")
     depth_was_corrected: bool = Field(False, description="True if estimated_water_depth_m was recomputed as height * ratio because the supplied value disagreed")
     submerged_ratio_source: str = Field("model_estimate", description="sam_mask_geometry if the ratio was measured from rasterized SAM mask pixels, else model_estimate")

@@ -14,9 +14,6 @@ export default function HeaderBar({
   overlappingClustersCount = 0,
   onSaveToAdmin,
   savedToast = false,
-  scenarios = [],
-  selectedScenarioId = "",
-  onSelectScenario,
 }) {
   const summary = floodProjection?.inundated_structures || {
     barangay: cameraParams?.barangay || "SAN JOSE",
@@ -84,34 +81,8 @@ export default function HeaderBar({
           </span>
         </div>
 
-        {/* Right Actions: Scenario Preset Selector, Save to Admin, and Workbench vs Admin Switcher */}
+        {/* Right Actions: Save to Admin and Workbench vs Admin Switcher */}
         <div className="header-actions">
-          {viewMode === "workbench" && scenarios.length > 0 && onSelectScenario && (
-            <select
-              aria-label="Load Rodriguez flood scenario preset"
-              value={selectedScenarioId || ""}
-              onChange={(e) => {
-                if (e.target.value) onSelectScenario(e.target.value);
-              }}
-              style={{
-                height: "30px",
-                padding: "0 8px",
-                fontSize: "12px",
-                borderRadius: "6px",
-                border: "1px solid var(--border)",
-                backgroundColor: "var(--surface)",
-                color: "var(--text)",
-              }}
-            >
-              <option value="">Load sector preset (12 barangays)...</option>
-              {scenarios.map((s) => (
-                <option key={s.id} value={s.id}>
-                  {s.name} ({s.water_depth_m.toFixed(2)}m)
-                </option>
-              ))}
-            </select>
-          )}
-
           {viewMode === "workbench" && floodProjection && onSaveToAdmin && (
             <button
               type="button"

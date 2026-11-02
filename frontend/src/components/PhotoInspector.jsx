@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from "react";
-import { Upload, Crosshair, RefreshCw, Eye, EyeOff, Trash2, Waves } from "lucide-react";
+import { Upload, Crosshair, RefreshCw, Eye, EyeOff, Trash2, Waves, Sparkles, CheckCircle2 } from "lucide-react";
 import { formatNumber, uncertaintyBand } from "../utils/format";
 
 const MASK_STROKES = {
@@ -11,7 +11,24 @@ const MASK_STROKES = {
   gate: { stroke: "#2f70bb", fill: "rgba(47, 112, 187, 0.18)" },
   "building entrance": { stroke: "#2f70bb", fill: "rgba(47, 112, 187, 0.18)" },
   "utility pole": { stroke: "#15803d", fill: "rgba(21, 128, 61, 0.20)" },
+  fence: { stroke: "#7c3aed", fill: "rgba(124, 58, 237, 0.18)" },
+  "sidewalk curb": { stroke: "#b45309", fill: "rgba(180, 83, 9, 0.20)" },
 };
+
+const SCAN_STAGES = [
+  {
+    label: "Segmenting floodwater",
+    detail: "SAM 3.1 scanning image for floodwater meniscus, vehicles, gates & scale objects...",
+  },
+  {
+    label: "Locating scale reference",
+    detail: "Measuring rasterized mask pixels and waterline intersection on detected reference objects...",
+  },
+  {
+    label: "Gauging water depth & reasoning",
+    detail: "Muse Spark 1.3 describing scene observations and deriving standing water depth...",
+  },
+];
 
 export default function PhotoInspector({
   analysisResult,
@@ -27,19 +44,20 @@ export default function PhotoInspector({
   onDeleteCustomPhoto,
   floodProjection,
   projectionLoading,
+  onSelectScenario,
+  onRunSelfCheck,
 }) {
   const [showMasks, setShowMasks] = useState(true);
   const [dragActive, setDragActive] = useState(false);
   const [imgAspect, setImgAspect] = useState(16 / 9);
 
-  const SCAN_STAGES = ["Segmenting floodwater", "Locating scale reference", "Gauging water depth"];
   const [scanStage, setScanStage] = useState(0);
   useEffect(() => {
     if (!photoUploading) {
       setScanStage(0);
       return undefined;
     }
-    const id = setInterval(() => setScanStage((s) => Math.min(SCAN_STAGES.length - 1, s + 1)), 2800);
+    const id = setInterval(() => setScanStage((s) => Math.min(SCAN_STAGES.length - 1, s + 1)), 2400);
     return () => clearInterval(id);
   }, [photoUploading]);
   const innerStageRef = useRef(null);
@@ -101,6 +119,22 @@ export default function PhotoInspector({
     }
   };
 
+  // Compute readable scene description & conclusion breakdown
+  const refHeight = gauge.reference_standard_height_m ?? 1.65;
+  const subRatio = gauge.submerged_ratio ?? 0.82;
+  const estDepth = gauge.estimated_water_depth_m ?? cameraParams.water_depth_m ?? Number((refHeight * subRatio).toFixed(2));
+  const detectedObjectsList = masks.length > 0
+    ? masks.map((m) => `${m.concept} (${Math.round((m.confidence ?? 0.9) * 100)}%)`).join(", ")
+    : null;
+  const sceneWhatItSees =
+    gauge.scene_description ||
+    (detectedObjectsList
+      ? `Segmented ${masks.length} visual object(s) in the street scene: ${detectedObjectsList}. Primary scale anchor identified as "${gauge.reference_object_detected || "reference structure"}".`
+      : gauge.hydrological_reasoning || "Street-level flood scene analyzed for reference objects and waterline meniscus.");
+
+  const howItConcluded =
+    gauge.conclusion_summary ||
+    `Anchored on "${gauge.reference_object_detected || "Submerged reference"}" (standard height ${refHeight.toFixed(2)} m) with waterline reaching ${Math.round(subRatio * 100)}% submergence (${refHeight.toFixed(2)} m × ${subRatio.toFixed(2)} = ${estDepth.toFixed(2)} m standing flood depth).`;
 
   return (
     <section className="panel-card" aria-label="Street photo perception and visual gauge">
@@ -155,6 +189,19 @@ export default function PhotoInspector({
             </button>
           )}
 
+          {photoUrl && !photoUploading && onRunSelfCheck && (
+            <button
+              type="button"
+              className="btn-secondary"
+              onClick={onRunSelfCheck}
+              title="Trigger autonomous <0.70 confidence self-check: re-prompts SAM 3.1 with fallback scale concepts (fence, utility pole, sidewalk curb) and recalibrates Muse Spark 1.3"
+              style={{ fontSize: "12px", padding: "0 10px" }}
+            >
+              <RefreshCw size={13} color="var(--accent)" />
+              <span>{analysisResult?.self_check_triggered ? "Re-run <0.70 Self-Check" : "Simulate <0.70 Self-Check"}</span>
+            </button>
+          )}
+
           <input
             ref={fileInputRef}
             type="file"
@@ -173,7 +220,6 @@ export default function PhotoInspector({
             <span>{photoUploading ? "Analyzing..." : "Upload photo"}</span>
           </button>
 
-          
           {photoUrl && (
             <button
               type="button"
@@ -289,7 +335,19 @@ export default function PhotoInspector({
               <span>{photoUploading ? "Analyzing photo..." : "Upload flood photo"}</span>
             </button>
 
-                      </div>
+            {onSelectScenario && (
+              <button
+                type="button"
+                className="btn-secondary"
+                disabled={photoUploading}
+                onClick={() => onSelectScenario("kasiglahan_village")}
+                style={{ fontSize: "12.5px", padding: "0 14px" }}
+              >
+                <Waves size={13} color="var(--accent)" />
+                <span>Load Demo Scenario (Kasiglahan Village · 1.35 m)</span>
+              </button>
+            )}
+          </div>
         </div>
       ) : (
         <div
@@ -358,7 +416,7 @@ export default function PhotoInspector({
                 style={{
                   position: "absolute",
                   inset: 0,
-                  background: "rgba(15, 23, 42, 0.10)",
+                  background: "rgba(15, 23, 42, 0.14)",
                   pointerEvents: "none",
                   zIndex: 5,
                 }}
@@ -384,12 +442,12 @@ export default function PhotoInspector({
                   top: "12px",
                   left: "50%",
                   transform: "translateX(-50%)",
-                  width: "min(430px, calc(100% - 24px))",
+                  width: "min(460px, calc(100% - 24px))",
                   background: "var(--surface)",
                   border: "1px solid var(--border)",
                   borderRadius: "var(--radius-card)",
                   boxShadow: "none",
-                  padding: "10px 12px",
+                  padding: "11px 14px",
                   pointerEvents: "none",
                   zIndex: 7,
                 }}
@@ -403,10 +461,10 @@ export default function PhotoInspector({
                   </span>
                   <span style={{ minWidth: 0 }}>
                     <span style={{ display: "block", color: "var(--text)", fontSize: "13px", fontWeight: 600, lineHeight: 1.25 }}>
-                      Analyzing flood photo
+                      Analyzing flood photo · {SCAN_STAGES[scanStage].label}
                     </span>
                     <span style={{ display: "block", color: "var(--muted)", fontSize: "11.5px", lineHeight: 1.35 }}>
-                      {SCAN_STAGES[scanStage]} · SAM 3.1 + Muse Spark
+                      {SCAN_STAGES[scanStage].detail}
                     </span>
                   </span>
                 </div>
@@ -414,10 +472,10 @@ export default function PhotoInspector({
                   <div className="hydro-loadbar" style={{ width: "34%", height: "100%", borderRadius: "2px", background: "var(--accent)" }} />
                 </div>
                 <div style={{ marginTop: "8px", display: "flex", gap: "12px", flexWrap: "wrap" }}>
-                  {SCAN_STAGES.map((label, i) => (
-                    <span key={label} style={{ display: "inline-flex", alignItems: "center", gap: "5px", fontSize: "11px", color: i <= scanStage ? "var(--text)" : "var(--faint)", fontWeight: i === scanStage ? 600 : 400 }}>
+                  {SCAN_STAGES.map((st, i) => (
+                    <span key={st.label} style={{ display: "inline-flex", alignItems: "center", gap: "5px", fontSize: "11px", color: i <= scanStage ? "var(--text)" : "var(--faint)", fontWeight: i === scanStage ? 600 : 400 }}>
                       <span className={i === scanStage ? "hydro-blink" : ""} style={{ width: "6px", height: "6px", borderRadius: "50%", backgroundColor: i <= scanStage ? "var(--accent)" : "var(--border-strong)", display: "inline-block" }} />
-                      {label}
+                      {st.label}
                     </span>
                   ))}
                 </div>
@@ -648,26 +706,27 @@ export default function PhotoInspector({
         </div>
       )}
 
-      {/* Visual Hydrological Gauge Telemetry */}
+      {/* Visual Hydrological Gauge Telemetry & Vision Conclusion Breakdown */}
       <div
         style={{
           border: "1px solid var(--border)",
           borderRadius: "6px",
-          padding: "10px 12px",
+          padding: "12px 14px",
           display: "flex",
           flexDirection: "column",
-          gap: "8px",
+          gap: "10px",
           backgroundColor: "var(--surface)",
         }}
       >
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
           <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+            <Sparkles size={14} color="var(--accent)" />
             <span style={{ fontSize: "13px", fontWeight: 600, color: "var(--text)" }}>
-              Scale reference:
+              Vision Perception & Depth Conclusion:
             </span>
-            <span style={{ fontSize: "13px", color: "var(--muted)" }}>
+            <span style={{ fontSize: "13px", color: "var(--muted)", fontWeight: 500 }}>
               {photoUploading
-                ? "Analyzing image perception..."
+                ? `${SCAN_STAGES[scanStage].label}...`
                 : photoUrl
                 ? (gauge.reference_object_detected || (isCustomPhoto ? "Operator field photo" : "Submerged reference structure"))
                 : "Awaiting photo input"}
@@ -676,14 +735,20 @@ export default function PhotoInspector({
 
           {photoUrl && !photoUploading && (
             <div style={{ display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
+              {analysisResult?.self_check_triggered && (
+                <span className="status-pill positive num" style={{ fontSize: "11.5px" }}>
+                  <CheckCircle2 size={11} />
+                  <span>Self-Check Recalibrated (+fallback concepts)</span>
+                </span>
+              )}
               <span className="status-pill neutral num" style={{ fontSize: "11.5px" }}>
-                {!analysisResult ? "Not analyzed yet" : analysisResult.fallback_used ? "Calibrated baseline - not live" : analysisResult.cached || analysisResult.execution_mode === "cached" ? "Cached result" : "Live inference"} · Std {(gauge.reference_standard_height_m ?? 1.65).toFixed(2)} m
+                {!analysisResult ? "Not analyzed yet" : analysisResult.fallback_used ? "Calibrated baseline - not live" : analysisResult.cached || analysisResult.execution_mode === "cached" ? "Cached result" : "Live inference"} · Std {refHeight.toFixed(2)} m
               </span>
               <span className="status-pill warning num" style={{ fontSize: "11.5px" }}>
-                Submerged {Math.round((gauge.submerged_ratio ?? 0.82) * 100)}%
+                Submerged {Math.round(subRatio * 100)}%
               </span>
               <span className="status-pill positive num" style={{ fontSize: "11.5px" }}>
-                {Math.round((gauge.confidence_score ?? 0.91) * 100)}% conf
+                Depth {estDepth.toFixed(2)} m ({Math.round((gauge.confidence_score ?? 0.91) * 100)}% conf)
               </span>
               <span className="status-pill neutral num" style={{ fontSize: "11.5px" }}>
                 Dist ~{Math.round(cameraParams.est_distance_m ?? gauge.estimated_distance_from_camera_m ?? 38)} m · model est.
@@ -692,13 +757,171 @@ export default function PhotoInspector({
           )}
         </div>
 
-        <p style={{ margin: 0, fontSize: "12.5px", color: "var(--muted)", lineHeight: 1.45 }}>
-          {photoUploading
-            ? "Segmenting waterline and identifying reference objects via SAM 3.1 & Muse Spark 1.3..."
-            : photoUrl
-            ? (gauge.hydrological_reasoning || (isCustomPhoto ? "Field photo loaded. Click waterline on photo to calibrate ray projection." : "Vision gauge detected reference structure waterline to calculate standing depth."))
-            : "SAM 3.1 segmentation and Muse Spark 1.3 visual depth gauge will analyze the street photo once loaded."}
-        </p>
+        {/* Autonomous Self-Check Banner when triggered */}
+        {!photoUploading && analysisResult?.self_check_triggered && (
+          <div
+            style={{
+              padding: "9px 12px",
+              borderRadius: "6px",
+              backgroundColor: "var(--accent-soft)",
+              border: "1px solid var(--accent)",
+              fontSize: "12.5px",
+              color: "var(--text)",
+              display: "flex",
+              flexDirection: "column",
+              gap: "4px",
+            }}
+          >
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "8px", flexWrap: "wrap" }}>
+              <strong style={{ display: "inline-flex", alignItems: "center", gap: "6px", color: "var(--accent)" }}>
+                <CheckCircle2 size={14} />
+                Autonomous &lt;0.70 Confidence Self-Check Loop Executed
+              </strong>
+              <span className="mono-id" style={{ fontSize: "11px", color: "var(--muted)" }}>
+                Fallback concepts added: fence · utility pole · sidewalk curb
+              </span>
+            </div>
+            <span style={{ color: "var(--muted)", lineHeight: 1.45 }}>
+              Re-prompted <code className="mono-id">sam-3.1</code> across {(analysisResult.prompts_used || []).length} total scale concepts (
+              <span className="mono-id">{(analysisResult.prompts_used || []).join(", ")}</span>
+              ), rasterized combined mask geometry, and recalibrated <code className="mono-id">muse-spark-1.3</code> depth gauge to{" "}
+              <strong className="num" style={{ color: "var(--text)" }}>{estDepth.toFixed(2)} m</strong> (
+              <strong className="num" style={{ color: "var(--text)" }}>{Math.round((gauge.confidence_score ?? 0.91) * 100)}%</strong> confidence).
+            </span>
+          </div>
+        )}
+
+        {/* Structured "What the AI Sees" & "How It Concluded the Depth" Cards */}
+        {photoUploading ? (
+          <div
+            style={{
+              padding: "10px 12px",
+              borderRadius: "6px",
+              backgroundColor: "var(--raised)",
+              border: "1px solid var(--border)",
+              display: "flex",
+              flexDirection: "column",
+              gap: "6px",
+            }}
+          >
+            <div style={{ display: "flex", alignItems: "center", gap: "8px", fontSize: "12.5px", fontWeight: 600, color: "var(--text)" }}>
+              <RefreshCw size={13} className="spin" color="var(--accent)" />
+              <span>{SCAN_STAGES[scanStage].label} (Stage {scanStage + 1} of {SCAN_STAGES.length})</span>
+            </div>
+            <p style={{ margin: 0, fontSize: "12.5px", color: "var(--muted)", lineHeight: 1.45 }}>
+              {SCAN_STAGES[scanStage].detail}
+            </p>
+          </div>
+        ) : photoUrl && analysisResult ? (
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))",
+              gap: "10px",
+            }}
+          >
+            {/* Card 1: What the Vision Model Sees */}
+            <div
+              style={{
+                padding: "10px 12px",
+                borderRadius: "6px",
+                backgroundColor: "var(--raised)",
+                border: "1px solid var(--border)",
+                display: "flex",
+                flexDirection: "column",
+                gap: "6px",
+              }}
+            >
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "6px" }}>
+                <span style={{ fontSize: "11.5px", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.03em", color: "var(--accent)" }}>
+                  1 · What Vision Sees in the Photo
+                </span>
+                <span className="status-pill neutral num" style={{ height: "20px", fontSize: "11px" }}>
+                  {masks.length} {masks.length === 1 ? "mask" : "masks"} detected
+                </span>
+              </div>
+              <p style={{ margin: 0, fontSize: "12.5px", color: "var(--text)", lineHeight: 1.5 }}>
+                {sceneWhatItSees}
+              </p>
+              {masks.length > 0 && (
+                <div style={{ display: "flex", gap: "5px", flexWrap: "wrap", marginTop: "2px" }}>
+                  {masks.map((m) => {
+                    const isBasis = Boolean(basisConcept && m.concept === basisConcept);
+                    return (
+                      <span
+                        key={m.id}
+                        className={`status-pill ${isBasis ? "positive" : "neutral"} num`}
+                        style={{ height: "20px", fontSize: "11px" }}
+                      >
+                        {m.concept}{isBasis ? " (scale basis)" : ""} · {Math.round((m.confidence ?? 0.9) * 100)}%
+                        {m.concept !== "floodwater" && m.submerged_ratio != null ? ` · ${Math.round(m.submerged_ratio * 100)}% sub` : ""}
+                      </span>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            {/* Card 2: How It Concluded the Flood Depth */}
+            <div
+              style={{
+                padding: "10px 12px",
+                borderRadius: "6px",
+                backgroundColor: "var(--raised)",
+                border: "1px solid var(--border)",
+                display: "flex",
+                flexDirection: "column",
+                gap: "6px",
+              }}
+            >
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "6px" }}>
+                <span style={{ fontSize: "11.5px", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.03em", color: "var(--positive)" }}>
+                  2 · How It Concluded {estDepth.toFixed(2)} m Flood Depth
+                </span>
+                <span className="status-pill positive num" style={{ height: "20px", fontSize: "11px" }}>
+                  {gauge.submerged_ratio_source === "sam_mask_geometry" ? "SAM pixel ratio" : "Vision gauge ratio"}
+                </span>
+              </div>
+              <p style={{ margin: 0, fontSize: "12.5px", color: "var(--text)", lineHeight: 1.5 }}>
+                {howItConcluded}
+              </p>
+              {gauge.hydrological_reasoning && gauge.hydrological_reasoning !== sceneWhatItSees && (
+                <p style={{ margin: 0, fontSize: "12px", color: "var(--muted)", lineHeight: 1.45 }}>
+                  <strong style={{ color: "var(--text)" }}>Hydrological reasoning: </strong>
+                  {gauge.hydrological_reasoning}
+                </p>
+              )}
+              <div
+                className="mono-id"
+                style={{
+                  marginTop: "auto",
+                  padding: "5px 8px",
+                  borderRadius: "4px",
+                  backgroundColor: "var(--surface)",
+                  border: "1px solid var(--border)",
+                  fontSize: "11.5px",
+                  color: "var(--text)",
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                  flexWrap: "wrap",
+                  gap: "6px",
+                }}
+              >
+                <span>
+                  Formula: <strong>{refHeight.toFixed(2)} m</strong> (std height) × <strong>{Math.round(subRatio * 100)}%</strong> (submerged) = <strong>{estDepth.toFixed(2)} m</strong>
+                </span>
+                <span style={{ color: "var(--muted)" }}>
+                  Waterline target: u={cameraParams.click_u.toFixed(2)}, v={cameraParams.click_v.toFixed(2)}
+                </span>
+              </div>
+            </div>
+          </div>
+        ) : (
+          <p style={{ margin: 0, fontSize: "12.5px", color: "var(--muted)", lineHeight: 1.45 }}>
+            SAM 3.1 segmentation and Muse Spark 1.3 visual depth gauge will describe what is visible in the street photo and how the water depth conclusion is derived once loaded.
+          </p>
+        )}
 
         {photoUrl && !photoUploading && (
           <div

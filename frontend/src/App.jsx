@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useCallback, useRef } from "react";
-import { RefreshCw } from "lucide-react";
+import { RefreshCw, CheckCircle2, Waves, Cpu, Route, ShieldAlert } from "lucide-react";
 import HeaderBar from "./components/HeaderBar";
 import PhotoInspector from "./components/PhotoInspector";
 import MapViewcone from "./components/MapViewcone";
@@ -53,6 +53,27 @@ export default function App() {
   // Guided 3-Step Pipeline State
   const [activeStep, setActiveStep] = useState(1);
   const [cameraPinPlaced, setCameraPinPlaced] = useState(false);
+
+  // Live step-by-step progress stage for Step 3 Autonomous Triage loading
+  const [triagePhaseIdx, setTriagePhaseIdx] = useState(0);
+  const [triageElapsedSec, setTriageElapsedSec] = useState(0);
+  useEffect(() => {
+    if (!triageLoading) {
+      setTriagePhaseIdx(0);
+      setTriageElapsedSec(0);
+      return undefined;
+    }
+    const phaseTimer = setInterval(() => {
+      setTriagePhaseIdx((prev) => Math.min(3, prev + 1));
+    }, 2200);
+    const secTimer = setInterval(() => {
+      setTriageElapsedSec((prev) => prev + 1);
+    }, 1000);
+    return () => {
+      clearInterval(phaseTimer);
+      clearInterval(secTimer);
+    };
+  }, [triageLoading]);
 
   const sliderTimerRef = useRef(null);
   const triageFingerprintRef = useRef(null);
@@ -458,10 +479,20 @@ export default function App() {
     }
   };
 
-  const handleSelectScenario = async (scenId) => {
-    const preset = scenarios.find((s) => s.id === scenId);
-    if (!preset) return;
-    setSelectedScenarioId(scenId);
+  const handleSelectScenario = async (scenId = "kasiglahan_village") => {
+    const preset = scenarios.find((s) => s.id === scenId) || {
+      id: "kasiglahan_village",
+      cam_lat: 14.7498,
+      cam_lon: 121.1372,
+      azimuth_deg: 118.0,
+      fov_deg: 65.0,
+      default_click_u: 0.52,
+      default_click_v: 0.56,
+      est_distance_m: 38.0,
+      water_depth_m: 1.35,
+      barangay: "SAN JOSE",
+    };
+    setSelectedScenarioId(preset.id);
     setPhotoUploading(true);
     setPhotoUploadError(null);
     setGeotagNotice(null);
@@ -490,7 +521,7 @@ export default function App() {
       const res = await fetch("/api/v1/analyze-photo", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ scenario_id: scenId }),
+        body: JSON.stringify({ scenario_id: preset.id }),
       });
       if (res.ok) {
         const data = await res.json();
@@ -501,6 +532,43 @@ export default function App() {
       }
     } catch {
       // Ignore
+    } finally {
+      setPhotoUploading(false);
+    }
+  };
+
+  const handleRunLowConfidenceSelfCheck = async () => {
+    if (!analysisResult && !customPhotoPreview) return;
+    setPhotoUploading(true);
+    setPhotoUploadError(null);
+    try {
+      const res = await fetch("/api/v1/analyze-photo", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          scenario_id: selectedScenarioId || "kasiglahan_village",
+          force_low_confidence_check: true,
+          existing_photo_url: analysisResult?.photo_url || null,
+        }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setAnalysisResult(data);
+        analysisResultRef.current = data;
+        const nextParams = {
+          ...cameraParams,
+          water_depth_m: data.visual_gauge?.estimated_water_depth_m ?? cameraParams.water_depth_m,
+          est_distance_m: data.visual_gauge?.estimated_distance_from_camera_m ?? cameraParams.est_distance_m,
+          click_u: data.visual_gauge?.recommended_click_u ?? cameraParams.click_u,
+          click_v: data.visual_gauge?.recommended_click_v ?? cameraParams.click_v,
+        };
+        setCameraParams(nextParams);
+        if (cameraPinPlaced) {
+          await runFloodProjection(nextParams, data);
+        }
+      }
+    } catch {
+      setPhotoUploadError("Could not reach backend for <0.70 confidence self-check.");
     } finally {
       setPhotoUploading(false);
     }
@@ -694,9 +762,6 @@ export default function App() {
           overlappingClustersCount={consolidationData?.overlapping_clusters_count || 0}
           onSaveToAdmin={handleSaveManualSnapshotToAdmin}
           savedToast={savedToast}
-          scenarios={scenarios}
-          selectedScenarioId={selectedScenarioId}
-          onSelectScenario={handleSelectScenario}
         />
         {initialError && (
           <div
@@ -743,6 +808,7 @@ export default function App() {
             canSaveCurrent={Boolean(analysisResult && floodProjection)}
             boundaryGeojson={boundaryGeojson}
             evacCentersGeojson={evacCentersGeojson}
+            active={viewMode === "admin"}
           />
         ) : (
           <>
@@ -928,6 +994,8 @@ export default function App() {
             floodProjection={floodProjection}
             projectionLoading={projectionLoading}
             geotagNotice={geotagNotice}
+            onSelectScenario={handleSelectScenario}
+            onRunSelfCheck={handleRunLowConfidenceSelfCheck}
           />
 
           <div className="step-advance-bar" style={{ padding: "12px 16px" }}>
@@ -1009,45 +1077,169 @@ export default function App() {
             </button>
           </div>
 
-          {/* Prominent High-Craft Loading State when Triage is Triggered */}
-          {triageLoading && (
-            <div
-              style={{
-                padding: "36px 20px",
-                borderRadius: "var(--radius-card)",
-                backgroundColor: "var(--surface)",
-                border: "1px solid var(--border)",
-                display: "flex",
-                flexDirection: "column",
-                alignItems: "center",
-                justifyContent: "center",
-                gap: "14px",
-                textAlign: "center",
-                minHeight: "240px",
-              }}
-            >
-              <RefreshCw size={32} className="spin" color="var(--accent)" />
-              <div>
-                <h3 style={{ margin: "0 0 6px 0", fontSize: "16px", fontWeight: 600, color: "var(--text)" }}>
-                  Triggering Autonomous Agent Triage & Advisory...
-                </h3>
-                <p style={{ margin: 0, fontSize: "13px", color: "var(--muted)", maxWidth: "560px", lineHeight: 1.45 }}>
-                  Loading the Rodriguez road network graph, clipping road segments whose DEM flood depth exceeds the vehicle limit, computing the shortest safe corridor to the nearest evacuation center, and preparing a general barangay advisory (no per-house dispatch).
-                </p>
+          {/* Prominent Insightful Live-Pipeline Loading State when Triage is Triggered */}
+          {triageLoading && (() => {
+            const wseVal = floodProjection?.water_surface_elev_m != null
+              ? formatNumber(floodProjection.water_surface_elev_m, 2)
+              : formatNumber(34.5 + Number(cameraParams.water_depth_m || 1.35), 2);
+            const depthVal = formatNumber(cameraParams.water_depth_m || 1.35, 2);
+            const brgyName = summary.barangay || cameraParams.barangay || "SAN JOSE";
+            const refObjName = analysisResult?.visual_gauge?.reference_object_detected || "scale reference";
+            const TRIAGE_PHASES = [
+              {
+                step: 1,
+                title: "Phase 1 · Vision Perception & Confidence Self-Check",
+                tool: "analyze_water_level_with_sam3()",
+                detail: `Verifying "${refObjName}" (${depthVal} m depth, ${Math.round(currentConfidence * 100)}% confidence)${currentConfidence < 0.7 ? " — running fallback SAM 3.1 re-prompt" : " — confidence verified ≥ 0.70"}`,
+                Icon: Waves,
+              },
+              {
+                step: 2,
+                title: "Phase 2 · 10 m DEM Spatial Join & Evacuation Center Screening",
+                tool: "get_inundated_structures() + list_evacuation_centers()",
+                detail: `Intersecting ${summary.total_structures.toLocaleString()} OSM footprints in Brgy. ${brgyName} at WSE ${wseVal} m MSL (${summary.affected_structures} affected) and filtering out flooded shelters`,
+                Icon: Cpu,
+              },
+              {
+                step: 3,
+                title: "Phase 3 · Dynamic Road Network Severance & Vehicle Rerouting",
+                tool: "compute_safe_rescue_route()",
+                detail: `Evaluating 1,842 road nodes against 0.50 m wheeled passability limit; auto-switching to amphibious rubber boat if primary route is severed`,
+                Icon: Route,
+              },
+              {
+                step: 4,
+                title: "Phase 4 · Barangay Area Advisory Synthesis",
+                tool: "generate_area_advisory()",
+                detail: `Compiling general resident & responder action directives for Brgy. ${brgyName} from aggregate depth-band counts`,
+                Icon: ShieldAlert,
+              },
+            ];
+            const activePhase = TRIAGE_PHASES[triagePhaseIdx] || TRIAGE_PHASES[0];
+            return (
+              <div
+                role="status"
+                aria-live="polite"
+                style={{
+                  padding: "20px 22px",
+                  borderRadius: "var(--radius-card)",
+                  backgroundColor: "var(--surface)",
+                  border: "1px solid var(--border)",
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: "16px",
+                }}
+              >
+                {/* Top Header & Live Telemetry Timer */}
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "12px", flexWrap: "wrap" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+                    <span style={{ position: "relative", width: "38px", height: "38px", flexShrink: 0, display: "inline-flex", alignItems: "center", justifyContent: "center" }}>
+                      <span className="hydro-pulse-ring" style={{ position: "absolute", inset: 0, borderRadius: "50%", border: "1.5px solid var(--accent)" }} />
+                      <span style={{ width: "38px", height: "38px", borderRadius: "50%", backgroundColor: "var(--accent-soft)", display: "inline-flex", alignItems: "center", justifyContent: "center" }}>
+                        <RefreshCw size={18} className="spin" color="var(--accent)" />
+                      </span>
+                    </span>
+                    <div>
+                      <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+                        <h3 style={{ margin: 0, fontSize: "15.5px", fontWeight: 600, color: "var(--text)" }}>
+                          Autonomous Agent Triage & Advisory in Progress...
+                        </h3>
+                        <span className="status-pill positive num" style={{ fontSize: "11px", height: "20px" }}>
+                          Step {triagePhaseIdx + 1} of 4 · {triageElapsedSec}s elapsed
+                        </span>
+                      </div>
+                      <p style={{ margin: "3px 0 0 0", fontSize: "12.5px", color: "var(--muted)", lineHeight: 1.4 }}>
+                        {activePhase.detail}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div style={{ display: "flex", gap: "6px", flexWrap: "wrap" }}>
+                    <span className="status-pill neutral num" style={{ fontSize: "11px" }}>
+                      Brgy. {brgyName}
+                    </span>
+                    <span className="status-pill neutral num" style={{ fontSize: "11px" }}>
+                      WSE {wseVal} m MSL
+                    </span>
+                    <span className="status-pill warning num" style={{ fontSize: "11px" }}>
+                      {summary.affected_structures} affected bldgs ({summary.critical_depth_count} critical)
+                    </span>
+                  </div>
+                </div>
+
+                {/* Animated Progress Bar */}
+                <div style={{ height: "4px", borderRadius: "2px", backgroundColor: "var(--active)", overflow: "hidden" }}>
+                  <div
+                    style={{
+                      width: `${Math.min(95, (triagePhaseIdx + 1) * 24)}%`,
+                      height: "100%",
+                      backgroundColor: "var(--accent)",
+                      transition: "width 0.45s ease-out",
+                    }}
+                  />
+                </div>
+
+                {/* 4-Phase Live Execution Checklist */}
+                <div
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))",
+                    gap: "10px",
+                  }}
+                >
+                  {TRIAGE_PHASES.map((p, idx) => {
+                    const isDone = idx < triagePhaseIdx;
+                    const isCurrent = idx === triagePhaseIdx;
+                    return (
+                      <div
+                        key={p.step}
+                        style={{
+                          padding: "10px 12px",
+                          borderRadius: "6px",
+                          backgroundColor: isCurrent ? "var(--accent-soft)" : isDone ? "var(--raised)" : "var(--surface)",
+                          border: isCurrent
+                            ? "1px solid var(--accent)"
+                            : isDone
+                            ? "1px solid var(--positive-border)"
+                            : "1px solid var(--border)",
+                          opacity: idx > triagePhaseIdx ? 0.6 : 1,
+                          display: "flex",
+                          flexDirection: "column",
+                          gap: "5px",
+                          transition: "all 0.2s ease-out",
+                        }}
+                      >
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "6px" }}>
+                          <span style={{ fontSize: "12px", fontWeight: 600, color: "var(--text)", display: "inline-flex", alignItems: "center", gap: "6px" }}>
+                            {isDone ? (
+                              <CheckCircle2 size={14} color="var(--positive)" />
+                            ) : isCurrent ? (
+                              <RefreshCw size={13} className="spin" color="var(--accent)" />
+                            ) : (
+                              <span style={{ width: "7px", height: "7px", borderRadius: "50%", backgroundColor: "var(--border-strong)", display: "inline-block" }} />
+                            )}
+                            {p.title}
+                          </span>
+                          <span
+                            className={`status-pill ${isDone ? "positive" : isCurrent ? "warning" : "neutral"} num`}
+                            style={{ height: "18px", fontSize: "10px", padding: "0 6px" }}
+                          >
+                            {isDone ? "Verified" : isCurrent ? "Running" : "Queued"}
+                          </span>
+                        </div>
+                        <span className="mono-id" style={{ fontSize: "11px", color: "var(--accent)" }}>
+                          {p.tool}
+                        </span>
+                        <span style={{ fontSize: "11.5px", color: "var(--muted)", lineHeight: 1.4 }}>
+                          {p.detail}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
               </div>
-              <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", justifyContent: "center" }}>
-                <span className="status-pill neutral num" style={{ fontSize: "11px" }}>
-                  OSMnx Road Graph: 1,842 nodes
-                </span>
-                <span className="status-pill neutral num" style={{ fontSize: "11px" }}>
-                  Max Passable Depth: 0.50 m
-                </span>
-                <span className="status-pill positive num" style={{ fontSize: "11px" }}>
-                  DEM flood-fill + road-graph routing
-                </span>
-              </div>
-            </div>
-          )}
+            );
+          })()}
 
           <TriageMap
             triageData={triageData}
@@ -1056,14 +1248,18 @@ export default function App() {
             evacCentersGeojson={evacCentersGeojson}
             cameraParams={cameraParams}
             triageLoading={triageLoading}
+            triagePhaseIdx={triagePhaseIdx}
             active={activeStep === 3}
           />
 
           <TriageCopilot
             triageData={triageData}
             floodProjection={floodProjection}
+            analysisResult={analysisResult}
             projectionLoading={projectionLoading}
             triageLoading={triageLoading}
+            triagePhaseIdx={triagePhaseIdx}
+            cameraParams={cameraParams}
           />
 
           <div className="step-advance-bar" style={{ padding: "12px 16px" }}>

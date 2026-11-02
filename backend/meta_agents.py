@@ -93,6 +93,7 @@ STANDARD_HEIGHTS_M = {
     "building entrance": 2.10,
     "utility pole": 6.00,
     "fence": 1.50,
+    "sidewalk curb": 0.20,
 }
 
 
@@ -199,7 +200,7 @@ def _make_masks_for_water_y(
     ]
 
 
-# Complete 12-Sector Preset Catalog covering all 11 Barangays of Rodriguez (Montalban), Rizal
+# Single Primary Demo Scenario Preset: Kasiglahan Village (Brgy. San Jose), Rodriguez (Montalban), Rizal
 SCENARIO_PRESETS: Dict[str, ScenarioPreset] = {
     "kasiglahan_village": ScenarioPreset(
         id="kasiglahan_village",
@@ -229,388 +230,21 @@ SCENARIO_PRESETS: Dict[str, ScenarioPreset] = {
             recommended_click_u=0.52,
             recommended_click_v=0.56,
             confidence_score=0.91,
+            scene_description=(
+                "Deep muddy brown floodwater inundating a residential street corridor in Kasiglahan Village, "
+                "surrounding concrete single-story and two-story houses, a partially submerged utility tricycle, "
+                "and a steel residential compound gate."
+            ),
+            conclusion_summary=(
+                "Anchored on Submerged Utility Tricycle & Residential Gate (standard height 1.65 m) with waterline "
+                "submerging 82% of its vertical profile -> 1.65 m x 0.82 = 1.35 m standing water depth."
+            ),
             hydrological_reasoning=(
                 "Floodwater meniscus reaches 82% of the standard 1.65m residential steel gate and fully "
                 "submerges the 1.25m tricycle sidecar cabin roof line at 38m forward range (depth = 1.35m)."
             ),
         ),
         sam_masks=_make_masks_for_water_y("kv", 0.56, "tricycle", 1.65, 0.82),
-    ),
-    "san_jose_riverfront": ScenarioPreset(
-        id="san_jose_riverfront",
-        name="Brgy. San Jose Riverfront Dike Road",
-        barangay="SAN JOSE",
-        subtitle="Wawa-Montalban Riverbank Spillway · West Dike Access",
-        cam_lat=14.7425,
-        cam_lon=121.1348,
-        azimuth_deg=142.0,
-        fov_deg=68.0,
-        default_click_u=0.54,
-        default_click_v=0.52,
-        est_distance_m=44.0,
-        water_depth_m=1.41,
-        photo_url="/static/photos/san_jose_riverfront.jpg",
-        evacuation_center_name="Brgy. San Jose Covered Court & Rescue Command Post",
-        evacuation_center_lat=14.7458,
-        evacuation_center_lon=121.1305,
-        river_basin="Montalban-Marikina Main Channel",
-        alert_level="CRITICAL (Spillway Overtopping)",
-        visual_gauge=VisualGaugeResult(
-            reference_object_detected="Submerged Passenger Sedan & First-Floor Entrance",
-            reference_standard_height_m=1.48,
-            submerged_ratio=0.95,
-            estimated_water_depth_m=1.41,
-            estimated_distance_from_camera_m=44.0,
-            recommended_click_u=0.54,
-            recommended_click_v=0.52,
-            confidence_score=0.89,
-            hydrological_reasoning=(
-                "Waterline overtops the 1.48m passenger sedan roof line and reaches 78% of the 2.1m "
-                "first-floor commercial entrance frame at 44m range, indicating 1.41m standing flood depth (1.48m x 0.95)."
-            ),
-        ),
-        sam_masks=_make_masks_for_water_y("sj", 0.52, "car", 1.48, 0.95),
-    ),
-    "montalban_town_center": ScenarioPreset(
-        id="montalban_town_center",
-        name="Montalban Town Center (Brgy. Rosario)",
-        barangay="ROSARIO",
-        subtitle="E. Rodriguez Highway Commercial Corridor · Public Market Approach",
-        cam_lat=14.7328,
-        cam_lon=121.1422,
-        azimuth_deg=86.0,
-        fov_deg=60.0,
-        default_click_u=0.50,
-        default_click_v=0.62,
-        est_distance_m=32.0,
-        water_depth_m=0.72,
-        photo_url="/static/photos/montalban_town_center.jpg",
-        evacuation_center_name="Rodriguez Municipal Gymnasium (Montalban Command Center)",
-        evacuation_center_lat=14.7362,
-        evacuation_center_lon=121.1468,
-        river_basin="Manggahan-Rosario Drainage Canal",
-        alert_level="HIGH (Orange Warning)",
-        visual_gauge=VisualGaugeResult(
-            reference_object_detected="Vehicle Wheel Arch & Perimeter Gate Lower Panel",
-            reference_standard_height_m=0.72,
-            submerged_ratio=1.0,
-            estimated_water_depth_m=0.72,
-            estimated_distance_from_camera_m=32.0,
-            recommended_click_u=0.50,
-            recommended_click_v=0.62,
-            confidence_score=0.94,
-            hydrological_reasoning=(
-                "Water surface fully submerges the 0.72m utility vehicle wheel arch and reaches the lower "
-                "crossbar of the commercial steel gate at 32m distance (depth = 0.72m x 1.0 = 0.72m)."
-            ),
-        ),
-        sam_masks=_make_masks_for_water_y("mtc", 0.62, "vehicle wheel", 0.72, 1.0),
-    ),
-    "san_isidro_southville": ScenarioPreset(
-        id="san_isidro_southville",
-        name="Southville 8B/8C Housing (Brgy. San Isidro)",
-        barangay="SAN ISIDRO",
-        subtitle="San Isidro Relocation Basin · Upper Puray Tributary",
-        cam_lat=14.7645,
-        cam_lon=121.1485,
-        azimuth_deg=105.0,
-        fov_deg=65.0,
-        default_click_u=0.51,
-        default_click_v=0.55,
-        est_distance_m=36.0,
-        water_depth_m=1.25,
-        photo_url="/static/photos/san_isidro_southville.jpg",
-        evacuation_center_name="San Isidro National High School Evacuation Complex",
-        evacuation_center_lat=14.7678,
-        evacuation_center_lon=121.1532,
-        river_basin="San Isidro-Puray Foothill Catchment",
-        alert_level="CRITICAL (Red Warning)",
-        visual_gauge=VisualGaugeResult(
-            reference_object_detected="Submerged Tricycle Sidecar & Block Entrance Gate",
-            reference_standard_height_m=1.65,
-            submerged_ratio=0.76,
-            estimated_water_depth_m=1.25,
-            estimated_distance_from_camera_m=36.0,
-            recommended_click_u=0.51,
-            recommended_click_v=0.55,
-            confidence_score=0.92,
-            hydrological_reasoning=(
-                "Flash-flood runoff in Southville 8B submerges 76% of the 1.65m tricycle frame and block gate (depth = 1.25m)."
-            ),
-        ),
-        sam_masks=_make_masks_for_water_y("sis", 0.55, "tricycle", 1.65, 0.76),
-    ),
-    "burgos_lowland": ScenarioPreset(
-        id="burgos_lowland",
-        name="M.H. Del Pilar Floodplain (Brgy. Burgos)",
-        barangay="BURGOS",
-        subtitle="Lower Marikina Riverbank · Burgos Residential Lowland",
-        cam_lat=14.7218,
-        cam_lon=121.1362,
-        azimuth_deg=135.0,
-        fov_deg=65.0,
-        default_click_u=0.53,
-        default_click_v=0.54,
-        est_distance_m=40.0,
-        water_depth_m=1.44,
-        photo_url="/static/photos/burgos_lowland.jpg",
-        evacuation_center_name="Burgos Elementary School & Barangay Rescue Hall",
-        evacuation_center_lat=14.7248,
-        evacuation_center_lon=121.1404,
-        river_basin="Lower Montalban-Marikina Floodplain",
-        alert_level="CRITICAL (Red Warning)",
-        visual_gauge=VisualGaugeResult(
-            reference_object_detected="Submerged Sedan Roof & Compound Gate",
-            reference_standard_height_m=1.50,
-            submerged_ratio=0.96,
-            estimated_water_depth_m=1.44,
-            estimated_distance_from_camera_m=40.0,
-            recommended_click_u=0.53,
-            recommended_click_v=0.54,
-            confidence_score=0.90,
-            hydrological_reasoning=(
-                "River backflow along M.H. Del Pilar Street reaches 96% of a 1.50m passenger vehicle (depth = 1.45m)."
-            ),
-        ),
-        sam_masks=_make_masks_for_water_y("brg", 0.54, "car", 1.50, 0.96),
-    ),
-    "san_rafael_wawa": ScenarioPreset(
-        id="san_rafael_wawa",
-        name="Wawa River Spillway Corridor (Brgy. San Rafael)",
-        barangay="SAN RAFAEL",
-        subtitle="Wawa Gorge Downstream Outflow · Sitio Wawa Approach",
-        cam_lat=14.7285,
-        cam_lon=121.1535,
-        azimuth_deg=92.0,
-        fov_deg=65.0,
-        default_click_u=0.52,
-        default_click_v=0.53,
-        est_distance_m=42.0,
-        water_depth_m=1.55,
-        photo_url="/static/photos/san_rafael_wawa.jpg",
-        evacuation_center_name="San Rafael Elementary School (Wawa Dam Sector)",
-        evacuation_center_lat=14.7315,
-        evacuation_center_lon=121.1580,
-        river_basin="Wawa Dam / Upper Marikina Gorge",
-        alert_level="CRITICAL (Spillway Surge)",
-        visual_gauge=VisualGaugeResult(
-            reference_object_detected="Submerged Utility Vehicle & Steel Gate",
-            reference_standard_height_m=1.70,
-            submerged_ratio=0.91,
-            estimated_water_depth_m=1.55,
-            estimated_distance_from_camera_m=42.0,
-            recommended_click_u=0.52,
-            recommended_click_v=0.53,
-            confidence_score=0.91,
-            hydrological_reasoning=(
-                "High-velocity discharge from Wawa Gorge submerges 91% of the 1.70m utility vehicle (depth = 1.55m)."
-            ),
-        ),
-        sam_masks=_make_masks_for_water_y("srw", 0.53, "car", 1.70, 0.91),
-    ),
-    "manggahan_highway": ScenarioPreset(
-        id="manggahan_highway",
-        name="E. Rodriguez Hwy Drainage Basin (Brgy. Manggahan)",
-        barangay="MANGGAHAN",
-        subtitle="Manggahan Commercial Strip · Municipal Hall Approach",
-        cam_lat=14.7282,
-        cam_lon=121.1418,
-        azimuth_deg=75.0,
-        fov_deg=62.0,
-        default_click_u=0.50,
-        default_click_v=0.60,
-        est_distance_m=34.0,
-        water_depth_m=0.95,
-        photo_url="/static/photos/manggahan_highway.jpg",
-        evacuation_center_name="Manggahan Covered Court & MDRRMO Staging Post",
-        evacuation_center_lat=14.7305,
-        evacuation_center_lon=121.1458,
-        river_basin="Manggahan Creek Urban Basin",
-        alert_level="HIGH (Orange Warning)",
-        visual_gauge=VisualGaugeResult(
-            reference_object_detected="Submerged Tricycle Wheel & Commercial Entrance",
-            reference_standard_height_m=1.25,
-            submerged_ratio=0.76,
-            estimated_water_depth_m=0.95,
-            estimated_distance_from_camera_m=34.0,
-            recommended_click_u=0.50,
-            recommended_click_v=0.60,
-            confidence_score=0.93,
-            hydrological_reasoning=(
-                "Urban creek overflow along E. Rodriguez Hwy submerges 76% of the 1.25m tricycle chassis (depth = 0.95m)."
-            ),
-        ),
-        sam_masks=_make_masks_for_water_y("mng", 0.60, "tricycle", 1.25, 0.76),
-    ),
-    "balite_proper": ScenarioPreset(
-        id="balite_proper",
-        name="J.P. Rizal Ave Town Proper (Brgy. Balite)",
-        barangay="BALITE",
-        subtitle="Balite Urban Core · Municipal Center Catchbasin",
-        cam_lat=14.7325,
-        cam_lon=121.1455,
-        azimuth_deg=110.0,
-        fov_deg=62.0,
-        default_click_u=0.51,
-        default_click_v=0.61,
-        est_distance_m=33.0,
-        water_depth_m=0.80,
-        photo_url="/static/photos/balite_proper.jpg",
-        evacuation_center_name="Balite Elementary School Evacuation Center",
-        evacuation_center_lat=14.7355,
-        evacuation_center_lon=121.1492,
-        river_basin="Balite-Rosario Urban Drainage",
-        alert_level="HIGH (Orange Warning)",
-        visual_gauge=VisualGaugeResult(
-            reference_object_detected="Vehicle Wheel Arch & Storefront Gate",
-            reference_standard_height_m=0.80,
-            submerged_ratio=1.0,
-            estimated_water_depth_m=0.80,
-            estimated_distance_from_camera_m=33.0,
-            recommended_click_u=0.51,
-            recommended_click_v=0.61,
-            confidence_score=0.92,
-            hydrological_reasoning=(
-                "Sheet flooding along J.P. Rizal Ave reaches 0.80m above curb grade, submerging vehicle wheel arches."
-            ),
-        ),
-        sam_masks=_make_masks_for_water_y("blt", 0.61, "vehicle wheel", 0.80, 1.0),
-    ),
-    "geronimo_riverbank": ScenarioPreset(
-        id="geronimo_riverbank",
-        name="Gen. Licerio Geronimo Corridor (Brgy. Geronimo)",
-        barangay="GERONIMO",
-        subtitle="Geronimo Lowland Creek · East Town Proper",
-        cam_lat=14.7352,
-        cam_lon=121.1488,
-        azimuth_deg=125.0,
-        fov_deg=64.0,
-        default_click_u=0.52,
-        default_click_v=0.57,
-        est_distance_m=36.0,
-        water_depth_m=1.15,
-        photo_url="/static/photos/geronimo_riverbank.jpg",
-        evacuation_center_name="Geronimo National High School Command Center",
-        evacuation_center_lat=14.7380,
-        evacuation_center_lon=121.1528,
-        river_basin="Geronimo Tributary Creek",
-        alert_level="CRITICAL (Red Warning)",
-        visual_gauge=VisualGaugeResult(
-            reference_object_detected="Submerged Tricycle & Perimeter Gate",
-            reference_standard_height_m=1.60,
-            submerged_ratio=0.72,
-            estimated_water_depth_m=1.15,
-            estimated_distance_from_camera_m=36.0,
-            recommended_click_u=0.52,
-            recommended_click_v=0.57,
-            confidence_score=0.90,
-            hydrological_reasoning=(
-                "Tributary overflow along Gen. Licerio Geronimo St reaches 1.15m depth across residential blocks."
-            ),
-        ),
-        sam_masks=_make_masks_for_water_y("ger", 0.57, "tricycle", 1.60, 0.72),
-    ),
-    "macabud_upland": ScenarioPreset(
-        id="macabud_upland",
-        name="Macabud Foothill Tributary (Brgy. Macabud)",
-        barangay="MACABUD",
-        subtitle="Northern Montalban Foothills · Puray Creek Confluence",
-        cam_lat=14.7865,
-        cam_lon=121.1435,
-        azimuth_deg=150.0,
-        fov_deg=65.0,
-        default_click_u=0.50,
-        default_click_v=0.58,
-        est_distance_m=35.0,
-        water_depth_m=1.05,
-        photo_url="/static/photos/macabud_upland.jpg",
-        evacuation_center_name="Macabud Barangay Multi-Purpose Evacuation Hall",
-        evacuation_center_lat=14.7895,
-        evacuation_center_lon=121.1475,
-        river_basin="Macabud-Puray Northern Sub-basin",
-        alert_level="HIGH (Flash Flood Watch)",
-        visual_gauge=VisualGaugeResult(
-            reference_object_detected="Submerged Gate & Utility Vehicle Chassis",
-            reference_standard_height_m=1.50,
-            submerged_ratio=0.70,
-            estimated_water_depth_m=1.05,
-            estimated_distance_from_camera_m=35.0,
-            recommended_click_u=0.50,
-            recommended_click_v=0.58,
-            confidence_score=0.89,
-            hydrological_reasoning=(
-                "Upland flash flood in Brgy. Macabud reaches 1.05m depth along low-lying creek crossings."
-            ),
-        ),
-        sam_masks=_make_masks_for_water_y("mcb", 0.58, "gate", 1.50, 0.70),
-    ),
-    "mascap_valley": ScenarioPreset(
-        id="mascap_valley",
-        name="Mascap Valley River Crossing (Brgy. Mascap)",
-        barangay="MASCAP",
-        subtitle="Payaran-Mascap Valley Floor · Sierra Madre Foothills",
-        cam_lat=14.7553,
-        cam_lon=121.1820,
-        azimuth_deg=130.0,
-        fov_deg=66.0,
-        default_click_u=0.52,
-        default_click_v=0.56,
-        est_distance_m=38.0,
-        water_depth_m=1.20,
-        photo_url="/static/photos/mascap_valley.jpg",
-        evacuation_center_name="Mascap Elementary School & Relief Center",
-        evacuation_center_lat=14.7582,
-        evacuation_center_lon=121.1862,
-        river_basin="Mascap-Payaran River Valley",
-        alert_level="CRITICAL (Valley Swell)",
-        visual_gauge=VisualGaugeResult(
-            reference_object_detected="Submerged Rural Tricycle & Compound Gate",
-            reference_standard_height_m=1.65,
-            submerged_ratio=0.73,
-            estimated_water_depth_m=1.20,
-            estimated_distance_from_camera_m=38.0,
-            recommended_click_u=0.52,
-            recommended_click_v=0.56,
-            confidence_score=0.90,
-            hydrological_reasoning=(
-                "Mountain catchment swell in Brgy. Mascap submerges 73% of the 1.65m reference gate and vehicle (depth = 1.20m)."
-            ),
-        ),
-        sam_masks=_make_masks_for_water_y("msc", 0.56, "tricycle", 1.65, 0.73),
-    ),
-    "puray_basin": ScenarioPreset(
-        id="puray_basin",
-        name="Puray River Lowland Crossing (Brgy. Puray)",
-        barangay="PURAY",
-        subtitle="Northeast Montalban Watershed · Puray River Spillway",
-        cam_lat=14.7920,
-        cam_lon=121.1980,
-        azimuth_deg=115.0,
-        fov_deg=65.0,
-        default_click_u=0.52,
-        default_click_v=0.54,
-        est_distance_m=40.0,
-        water_depth_m=1.40,
-        photo_url="/static/photos/puray_basin.jpg",
-        evacuation_center_name="Puray Elementary School & Upland Rescue Post",
-        evacuation_center_lat=14.7950,
-        evacuation_center_lon=121.2022,
-        river_basin="Puray River Main Watershed",
-        alert_level="CRITICAL (River Swell)",
-        visual_gauge=VisualGaugeResult(
-            reference_object_detected="Submerged Utility Vehicle & Steel Gate",
-            reference_standard_height_m=1.65,
-            submerged_ratio=0.85,
-            estimated_water_depth_m=1.40,
-            estimated_distance_from_camera_m=40.0,
-            recommended_click_u=0.52,
-            recommended_click_v=0.54,
-            confidence_score=0.91,
-            hydrological_reasoning=(
-                "Puray River overflow submerges 85% of the 1.65m reference vehicle and gate structure (depth = 1.40m)."
-            ),
-        ),
-        sam_masks=_make_masks_for_water_y("pry", 0.54, "car", 1.65, 0.85),
     ),
 }
 
@@ -826,6 +460,11 @@ def _apply_sam_geometry_to_gauge(masks: List[SAMMaskObject], gauge: VisualGaugeR
         recommended_click_u=gauge.recommended_click_u,
         recommended_click_v=gauge.recommended_click_v,
         confidence_score=gauge.confidence_score,
+        scene_description=gauge.scene_description,
+        conclusion_summary=(
+            f"SAM 3.1 segmented {matched.concept} ({int(matched.pixel_count)} mask px, {matched.geometry_source}) "
+            f"with measured submerged ratio {ratio * 100:.0f}% against standard height {h:.2f} m -> {round(h * ratio, 2):.2f} m standing water depth."
+        ),
         hydrological_reasoning=(
             f"{gauge.hydrological_reasoning} "
             f"[SAM mask geometry: {matched.concept} submerged_ratio {ratio:.2f} measured from "
@@ -968,15 +607,28 @@ def call_sam3_segmentation(
         # go straight to the calibrated fallback (preset masks / empty for uploads).
         if is_custom_upload:
             return [], True, False
+        if scenario_id.endswith("_fallback"):
+            return [
+                SAMMaskObject(
+                    id="mask-fallback-fence-kv",
+                    concept="fence",
+                    confidence=0.88,
+                    bbox_norm=[0.24, 0.45, 0.42, 0.76],
+                    polygon_norm=[[0.24, 0.45], [0.42, 0.45], [0.42, 0.76], [0.24, 0.76]],
+                    submerged_ratio=0.82,
+                    standard_height_m=1.50,
+                    geometry_source="preset",
+                ),
+            ], True, False
         return list(preset.sam_masks), True, False
-    # Run live SAM 3.1 perception across key flood concepts for all photos (preset or upload)
+    # Run live SAM 3.1 perception across requested flood concepts for all photos (preset or upload)
     b64_url = _encode_image_b64(image_path)
     try:
         with Image.open(image_path) as _im:
             _img_w, _img_h = _im.size
     except Exception:
         _img_w, _img_h = 1000, 1000
-    concepts_to_query = ["water", "person", "car", "tricycle", "gate", "utility pole"]
+    concepts_to_query = ["water" if p == "floodwater" else p for p in (prompts or PRIMARY_SAM_PROMPTS)]
     detected_masks: List[SAMMaskObject] = []
 
     any_api_ok = False
@@ -1025,7 +677,7 @@ def call_muse_spark_visual_gauge(
     preset = SCENARIO_PRESETS.get(scenario_id, SCENARIO_PRESETS["kasiglahan_village"])
     img_hash = hashlib.sha256(image_path.read_bytes()).hexdigest()[:16]
     cache_key_payload = {
-        "endpoint": "muse-spark-1.3/visual-gauge-v3",
+        "endpoint": "muse-spark-1.3/visual-gauge-v4",
         "image_hash": img_hash,
         "scenario_id": scenario_id,
         "is_custom_upload": is_custom_upload,
@@ -1048,6 +700,8 @@ def call_muse_spark_visual_gauge(
                 recommended_click_u=0.50,
                 recommended_click_v=0.65,
                 confidence_score=0.80,
+                scene_description="Street-level field photograph uploaded by operator in offline/fallback mode without live vision segmentation.",
+                conclusion_summary="Baseline 1.60 m vertical reference at 50% submergence yields a 0.80 m initial depth estimate. Click the visible waterline on the photo to calibrate ray casting.",
                 hydrological_reasoning="Field photo loaded. Click the visible waterline on the photo to calibrate ray casting and depth.",
             ), True, False
         return preset.visual_gauge, True, False
@@ -1056,13 +710,17 @@ def call_muse_spark_visual_gauge(
     system_prompt = (
         "You are HydroSight AI's Visual Hydrological Gauge powered by Meta Muse Spark 1.3. "
         "Examine the uploaded flood photograph and the SAM 3.1 detected object bounding boxes. "
-        "Identify the actual primary submerged reference object visible in the photo (e.g., wading person/adult, "
+        "1) Describe clearly what you see in the image (`scene_description`): the floodwater appearance, street/structures, vehicles, people, and where the waterline cuts across visible objects. "
+        "2) Identify the actual primary submerged reference object visible in the photo (e.g., wading person/adult, "
         "car, tricycle, motorcycle, gate, utility pole, building entrance) and estimate the standing flood depth "
         "in meters based on how high the waterline reaches on that reference object (for example: ankle-deep ~0.2m, "
         "knee-deep ~0.45m, thigh/waist-deep on an adult ~0.75-0.95m, chest-deep ~1.25m, car wheel ~0.7m, car roof ~1.45m). "
+        "3) Explain step-by-step how you concluded that depth (`conclusion_summary` and `hydrological_reasoning`): state the reference object chosen, its standard physical height in meters, the observed submerged fraction where the waterline meets the object, and the resulting depth formula (height_m x submerged_ratio = depth_m). "
         "SAM mask geometry fields (sam_submerged_ratio, mask_area_frac, waterline_v) are MEASURED from rasterized SAM masks, not estimates: "
         "when sam_submerged_ratio is present for your chosen reference object, your submerged_ratio MUST equal it exactly. "
         "Return ONLY a valid JSON object with these exact keys: "
+        "scene_description (str: 1-2 sentences describing what is visible in the scene and where the floodwater reaches), "
+        "conclusion_summary (str: 1-2 sentences explaining how the depth conclusion was derived from the scale reference and submergence ratio), "
         "reference_object_detected (str), reference_standard_height_m (float), submerged_ratio (float 0.05 to 1.0), "
         "estimated_water_depth_m (float 0.15 to 3.5), estimated_distance_from_camera_m (float 5.0 to 60.0), "
         "recommended_click_u (float 0.1 to 0.9 pointing to the main reference object horizontally), "
@@ -1115,16 +773,27 @@ def call_muse_spark_visual_gauge(
             if resp.status_code == 200:
                 content = resp.json()["choices"][0]["message"]["content"]
                 parsed = json.loads(content)
+                ref_name = str(parsed.get("reference_object_detected", "Detected Flood Reference"))
+                ref_h = max(0.3, float(parsed.get("reference_standard_height_m", 1.60)))
+                sub_r = max(0.05, min(1.0, float(parsed.get("submerged_ratio", 0.50))))
+                est_d = round(ref_h * sub_r, 2)
+                hydro_reason = str(parsed.get("hydrological_reasoning", "Analyzed via SAM 3.1 + Muse Spark 1.3."))
+                scene_desc = str(parsed.get("scene_description") or "").strip() or None
+                conc_sum = str(parsed.get("conclusion_summary") or "").strip() or (
+                    f"Anchored on '{ref_name}' (standard height {ref_h:.2f} m) at {sub_r * 100:.0f}% submergence -> {est_d:.2f} m standing water depth."
+                )
                 gauge = VisualGaugeResult(
-                    reference_object_detected=str(parsed.get("reference_object_detected", "Detected Flood Reference")),
-                    reference_standard_height_m=max(0.3, float(parsed.get("reference_standard_height_m", 1.60))),
-                    submerged_ratio=max(0.05, min(1.0, float(parsed.get("submerged_ratio", 0.50)))),
-                    estimated_water_depth_m=max(0.15, min(3.5, float(parsed.get("estimated_water_depth_m", 0.85)))),
+                    reference_object_detected=ref_name,
+                    reference_standard_height_m=ref_h,
+                    submerged_ratio=sub_r,
+                    estimated_water_depth_m=max(0.15, min(3.5, float(parsed.get("estimated_water_depth_m", est_d)))),
                     estimated_distance_from_camera_m=max(5.0, min(80.0, float(parsed.get("estimated_distance_from_camera_m", 18.0)))),
                     recommended_click_u=max(0.05, min(0.95, float(parsed.get("recommended_click_u", 0.50)))),
                     recommended_click_v=max(0.15, min(0.90, float(parsed.get("recommended_click_v", 0.58)))),
                     confidence_score=max(0.50, min(0.99, float(parsed.get("confidence_score", 0.88)))),
-                    hydrological_reasoning=str(parsed.get("hydrological_reasoning", "Analyzed via SAM 3.1 + Muse Spark 1.3.")),
+                    scene_description=scene_desc,
+                    conclusion_summary=conc_sum,
+                    hydrological_reasoning=hydro_reason,
                 )
                 _write_cache(cache_key_payload, {"visual_gauge": gauge.model_dump(), "source": "muse-spark-1.3-live"})
                 logger.info(f"Muse Spark 1.3: Live visual gauge resolved for {image_path.name}: depth={gauge.estimated_water_depth_m}m, conf={gauge.confidence_score}")
@@ -1144,6 +813,8 @@ def call_muse_spark_visual_gauge(
             recommended_click_u=0.50,
             recommended_click_v=0.65,
             confidence_score=0.80,
+            scene_description="Street-level field photograph uploaded by operator in offline/fallback mode without live vision segmentation.",
+            conclusion_summary="Baseline 1.60 m vertical reference at 50% submergence yields a 0.80 m initial depth estimate. Click the visible waterline on the photo to calibrate ray casting.",
             hydrological_reasoning="Field photo loaded. Click the visible waterline on the photo to calibrate ray casting and depth.",
         )
         return generic_gauge, True, False
@@ -1276,6 +947,7 @@ def analyze_water_level_with_sam3(
             for fm in fallback_masks:
                 if fm.id not in existing_ids:
                     masks.append(fm)
+            masks = _compute_mask_geometry(masks, img_path)
             gauge, sp_is_fallback, sp_from_cache = call_muse_spark_visual_gauge(
                 img_path, masks, scenario_id=f"{'live_operator' if is_custom else preset.id}_fallback", is_custom_upload=is_custom
             )

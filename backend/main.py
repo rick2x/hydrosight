@@ -146,6 +146,12 @@ async def analyze_photo(
             raw_bytes = base64.b64decode(img_b64)
             photo_geotag = extract_exif_geotag(raw_bytes)
             uploaded_path = _save_normalized_upload(raw_bytes)
+        else:
+            existing_url = body.get("existing_photo_url")
+            if existing_url:
+                cand = PHOTOS_DIR / Path(str(existing_url)).name
+                if cand.exists() and cand.is_file() and cand.name.startswith("upload_"):
+                    uploaded_path = cand
     elif file is not None:
         raw_bytes = await file.read()
         if raw_bytes:

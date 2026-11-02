@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import maplibregl from "maplibre-gl";
-import { Navigation, Route, ShieldAlert } from "lucide-react";
+import { Navigation, Route, ShieldAlert, RefreshCw } from "lucide-react";
 import { pickClickTarget, evacPopupHtml } from "../utils/mapClick.js";
 
 const LIGHT_MAP_STYLE = {
@@ -31,6 +31,13 @@ const LIGHT_MAP_STYLE = {
 
 const EMPTY_FC = { type: "FeatureCollection", features: [] };
 
+const MAP_LOADING_MESSAGES = [
+  "Step 1/4: Verifying waterline depth & SAM 3.1 reference scale...",
+  "Step 2/4: Joining OSM footprints against DEM WSE & screening dry evacuation centers...",
+  "Step 3/4: Severing flooded road edges (>0.50 m) & routing shortest safe corridor...",
+  "Step 4/4: Finalizing rescue corridor geometry & barangay area advisory...",
+];
+
 function collectCoords(node, out) {
   if (!node) return;
   if (Array.isArray(node) && node.length >= 2 && typeof node[0] === "number" && typeof node[1] === "number") {
@@ -50,7 +57,16 @@ function collectCoords(node, out) {
   }
 }
 
-export default function TriageMap({ triageData, floodProjection, boundaryGeojson, evacCentersGeojson, cameraParams, triageLoading, active }) {
+export default function TriageMap({
+  triageData,
+  floodProjection,
+  boundaryGeojson,
+  evacCentersGeojson,
+  cameraParams,
+  triageLoading,
+  triagePhaseIdx = 0,
+  active,
+}) {
   const containerRef = useRef(null);
   const mapRef = useRef(null);
   const targetMarkerRef = useRef(null);
@@ -304,13 +320,25 @@ export default function TriageMap({ triageData, floodProjection, boundaryGeojson
       <div style={{ position: "relative" }}>
         <div ref={containerRef} style={{ width: "100%", height: "440px", borderRadius: "6px", overflow: "hidden", border: "1px solid var(--border)", backgroundColor: "#eef2f5" }} />
         {!triageData && (
-          <div style={{ position: "absolute", inset: 0, borderRadius: "6px", backgroundColor: "rgba(248, 250, 252, 0.92)", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: "8px", padding: "28px 16px", textAlign: "center", zIndex: 2 }}>
-            {triageLoading ? <ShieldAlert size={20} color="var(--accent)" /> : <Navigation size={20} color="var(--muted)" />}
-            <span style={{ fontSize: "13px", color: "var(--muted)", maxWidth: "460px" }}>
-              {triageLoading
-                ? "Computing the safe corridor on the Rodriguez road network..."
-                : "The safe corridor map appears here once Step 3 triage computes the route."}
-            </span>
+          <div style={{ position: "absolute", inset: 0, borderRadius: "6px", backgroundColor: "rgba(248, 250, 252, 0.88)", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: "10px", padding: "28px 16px", textAlign: "center", zIndex: 2 }}>
+            {triageLoading ? (
+              <>
+                <RefreshCw size={22} className="spin" color="var(--accent)" />
+                <span style={{ fontSize: "13.5px", fontWeight: 600, color: "var(--text)", maxWidth: "480px" }}>
+                  {MAP_LOADING_MESSAGES[triagePhaseIdx] || MAP_LOADING_MESSAGES[0]}
+                </span>
+                <span style={{ fontSize: "12px", color: "var(--muted)", maxWidth: "460px" }}>
+                  Step 2 DEM flood extent and 3D building footprints are loaded beneath; safe corridor & severed road segments will render automatically once routing finishes.
+                </span>
+              </>
+            ) : (
+              <>
+                <Navigation size={20} color="var(--muted)" />
+                <span style={{ fontSize: "13px", color: "var(--muted)", maxWidth: "460px" }}>
+                  The safe corridor map appears here once Step 3 triage computes the route.
+                </span>
+              </>
+            )}
           </div>
         )}
       </div>

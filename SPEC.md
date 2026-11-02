@@ -11,11 +11,11 @@
 **HydroSight AI** is a full-stack geospatial web application that converts sideways, street-level flood photos into topologically valid **3D Flood Extent Shapefiles (`.shp` / `.geojson`)**, building-level inundation depth grids, and autonomous emergency rescue routes.
 
 ### Core Workflow:
-1. **Input:** An operator uploads a street flood photo, places a Camera Pin (`lat, lon`) on the interactive map, and rotates a Field-of-View (FOV) camera frustum (`azimuth_deg`, `fov_deg`) down the street.
-2. **Visual Perception (`sam-3.1`):** Performs zero-shot promptable concept segmentation on the street photo to extract binary masks and bounding boxes for `"floodwater"` and submerged vertical scale reference objects (`"vehicle wheel"`, `"car"`, `"tricycle"`, `"person"`, `"gate"`, `"first-floor door"`).
-3. **Visual Hydrological Gauging (`muse-spark-1.3`):** Analyzes the annotated image and SAM 3.1 masks to estimate water depth in meters (`water_depth_m`) and forward distance from the camera (`distance_from_camera_m`) in strict JSON.
+1. **Input:** An operator uploads a street flood photo (or loads the primary Kasiglahan Village demo scenario), places a Camera Pin (`lat, lon`) on the interactive map, and rotates a Field-of-View (FOV) camera frustum (`azimuth_deg`, `fov_deg`) down the street.
+2. **Visual Perception (`sam-3.1`):** Performs zero-shot promptable concept segmentation on the street photo to extract binary masks and bounding boxes for `"floodwater"` and submerged vertical scale reference objects (`"person"`, `"car"`, `"tricycle"`, `"gate"`, `"building entrance"`), with an automated or operator-triggered `< 0.70` confidence self-check loop that re-prompts `sam-3.1` using fallback scale concepts (`"fence"`, `"utility pole"`, `"sidewalk curb"`).
+3. **Visual Hydrological Gauging (`muse-spark-1.3`):** Analyzes the annotated image and rasterized SAM 3.1 masks to describe what is visible in the scene (`scene_description`), derive how the flood depth conclusion was reached (`conclusion_summary`: `reference_standard_height_m * submerged_ratio = estimated_water_depth_m`), and estimate forward distance from the camera (`estimated_distance_from_camera_m`) in strict JSON.
 4. **Raycast-to-DEM Physics Engine (`Python / Rasterio / GeoPandas`):** Projects the camera coordinate along the target ray bearing onto a local Digital Elevation Model (`rodriguez_srtmgl1_10m_utm51n.tif` in `EPSG:32651`), samples ground elevation ($Z_{DEM}$), computes Water Surface Elevation ($WSE = Z_{DEM} + h_w$), flood-fills the connected lowland catchment where $DEM \le WSE$, and vectorizes the result into downloadable `.shp` and `.geojson` files.
-5. **Autonomous Triage & Routing (`muse-spark-1.3` Tool-Calling):** Uses multi-turn function-calling over an `OSMnx`/`NetworkX` road graph to verify dry evacuation centers, clip flooded road segments (`depth > 0.5m` for wheeled rescue trucks; autonomous retry with `amphibious_rubber_boat` when primary routes are severed), compute safe rescue routes, and generate one general barangay flood advisory (what residents and responders should do; never a per-house rescue dispatch).
+5. **Autonomous Triage & Routing (`muse-spark-1.3` Tool-Calling):** Uses multi-turn function-calling over an `OSMnx`/`NetworkX` road graph to verify dry evacuation centers, clip flooded road segments (`depth > 0.5m` for wheeled rescue trucks; autonomous retry with `amphibious_rubber_boat` when primary routes are severed), compute safe rescue routes, generate one general barangay flood advisory (what residents and responders should do; never a per-house rescue dispatch), and export a printable 1-page MDRRMO Situation Report.
 6. **Admin Flood Registry & Overlapping Prediction Consolidation (`backend/incidents_store.py`):** Groups spatially intersecting reports in `EPSG:32651`, reconciles overlapping WSE measurements via 2D Inverse-Distance + SAM 3.1 confidence weighting (`confidence_weighted`, `max_envelope`, or `highest_confidence`), flags high-variance WSE outliers, and evaluates OSM buildings once against the unified flood surface so structures are never double-counted.
 
 ---
@@ -42,10 +42,12 @@ rodriguez-flood-triage/
 └── frontend/
     ├── src/
     │   ├── components/
-    │   │   ├── HeaderBar.jsx          # Scenario selector + 1-click Export .SHP button
-    │   │   ├── PhotoInspector.jsx     # Left Panel: Street photo, SAM 3.1 mask overlay, click target
-    │   │   ├── MapViewcone.jsx        # Right Panel: MapLibre GL 3D terrain, camera pin, Turf.js FOV cone
-    │   │   └── TriageCopilot.jsx      # Bottom Panel: Muse Spark route logs & general area advisory
+    │   │   ├── HeaderBar.jsx          # Mode switcher + telemetry status bar
+    │   │   ├── PhotoInspector.jsx     # Step 1: Street photo, SAM 3.1 mask overlay, visual breakdown & self-check
+    │   │   ├── MapViewcone.jsx        # Step 2: MapLibre GL 3D terrain, camera pin, Turf.js FOV cone
+    │   │   ├── TriageMap.jsx          # Step 3: Safe rescue corridor & severed road visualization
+    │   │   ├── TriageCopilot.jsx      # Step 3: Agent trace, barangay advisory & printable 1-page SitRep
+    │   │   └── AdminDashboard.jsx     # Admin Registry: Overlap clusters, reconciliation & 3D union map
     │   ├── App.jsx
     │   └── main.jsx
     ├── package.json
@@ -209,10 +211,11 @@ def project_photo_to_flood_shapefile(
 ### 5.2 Stage 1: Visual Depth Gauge (`sam-3.1` + `muse-spark-1.3`)
 0. **EXIF geotag scan (before any re-save):** `extract_exif_geotag()` in `backend/meta_agents.py` reads GPS (`GPSLatitude/Longitude`, plus `GPSImgDirection`/`GPSAltitude` when present) from the RAW upload bytes and returns it as `photo_geotag` (`PhotoGeotag` in `backend/schemas.py`). The stored copy is re-saved as a plain RGB JPEG with EXIF stripped, so location data is never kept in `backend/data/sample_photos/`. If the geotag lies inside the Rodriguez pilot coverage (14.69-14.89 N, 121.10-121.35 E), the frontend pre-places the camera pin at those coordinates (and sets azimuth from `GPSImgDirection` when recorded); the operator must still confirm or drag the pin in Step 2, because phone GPS is typically only accurate to 5-30 m and a forwarded photo can carry someone else's location. Geotags outside the pilot area are reported but never auto-placed, and photos with no GPS EXIF (common after WhatsApp/Facebook sharing or screenshots) fall back to manual pin placement with an explicit notice. A geotag is a placement hint, never a verified camera position.
 1. Send uploaded street photo to `sam-3.1` with concept prompts:
-   `["floodwater", "vehicle wheel", "car", "tricycle", "person", "gate", "building entrance"]`
+   `["water", "person", "car", "tricycle", "gate", "building entrance"]` (and fallback concepts `["fence", "utility pole", "sidewalk curb"]` when `< 0.70` confidence self-check is triggered).
 2. Pass the original image + SAM 3.1 bounding/mask metadata to `muse-spark-1.3` with `response_format={"type": "json_object"}` enforcing this Pydantic schema:
 
 ```python
+from typing import Optional
 from pydantic import BaseModel, Field
 
 class VisualGaugeResult(BaseModel):
@@ -224,6 +227,8 @@ class VisualGaugeResult(BaseModel):
     recommended_click_u: float = Field(..., description="Normalized horizontal X position [0.0-1.0] of reference object")
     recommended_click_v: float = Field(..., description="Normalized vertical Y position [0.0-1.0] of waterline at object")
     confidence_score: float = Field(..., description="Confidence from 0.0 to 1.0")
+    scene_description: Optional[str] = Field(None, description="Concise visual description of what is observed in the uploaded flood photograph")
+    conclusion_summary: Optional[str] = Field(None, description="Clear step-by-step summary of how the visual depth conclusion was derived from the observed reference object and waterline")
     hydrological_reasoning: str = Field(..., description="Concise explanation of depth calculation")
 ```
 
@@ -239,8 +244,8 @@ Provide `muse-spark-1.3` with the following tools:
 
 | Method | Endpoint | Purpose |
 | :--- | :--- | :--- |
-| `GET` | `/api/v1/scenarios` | Returns 12 pre-configured Rodriguez flood scenarios covering all 11 barangays with preset camera coordinates, azimuths, and sample photo URLs. |
-| `POST` | `/api/v1/analyze-photo` | Accepts image upload or scenario ID; scans raw EXIF for a GPS geotag (`photo_geotag`, pin pre-placement only, EXIF stripped from the stored copy); runs `sam-3.1` + `muse-spark-1.3` visual gauge; returns masks and `VisualGaugeResult`. |
+| `GET` | `/api/v1/scenarios` | Returns the primary Kasiglahan Village flood demo scenario preset (`kasiglahan_village`) with calibrated camera coordinates, azimuth, and sample photo URL. |
+| `POST` | `/api/v1/analyze-photo` | Accepts image upload or scenario ID (plus optional `force_low_confidence_check`); scans raw EXIF for a GPS geotag (`photo_geotag`, pin pre-placement only, EXIF stripped from the stored copy); runs `sam-3.1` + `muse-spark-1.3` visual gauge; returns masks and `VisualGaugeResult`. |
 | `POST` | `/api/v1/project-flood` | Accepts `{ cam_lat, cam_lon, azimuth_deg, fov_deg, click_u, est_distance_m, water_depth_m }`; runs `project_photo_to_flood_shapefile()`; returns GeoJSON layers + Shapefile download link. |
 | `POST` | `/api/v1/triage-route` | Runs `muse-spark-1.3` tool-calling to compute safe evacuation routes and issue one general barangay `AreaAdvisory` (no per-building dispatch tickets). |
 | `GET` | `/api/v1/download-shp/{run_id}` | Streams the zipped `.shp` bundle (`flood_extent_{run_id}.zip`). |
@@ -251,16 +256,15 @@ Provide `muse-spark-1.3` with the following tools:
 
 ## 7. Frontend Implementation Requirements (`frontend/`)
 
-1. **Split-Screen Layout:**
-   - **Left Panel (`PhotoInspector.jsx`):** Renders the street flood photo with interactive SVG/Canvas overlays for `sam-3.1` segmentation masks. Clicking anywhere on the waterline or on a detected reference object updates `click_u`, recalculates the ray angle, and triggers `/api/v1/project-flood`. Includes sliders for `Azimuth (0-360°)`, `FOV (40-90°)`, and `Water Depth Override`.
-   - **Right Panel (`MapViewcone.jsx`):** MapLibre GL JS map centered on Rodriguez, Rizal (`[121.142, 14.738]`, zoom `15.5`, pitch `50°`). Renders:
+1. **Guided 3-Step Operator Workbench + Admin Registry:**
+   - **Step 1 (`PhotoInspector.jsx`):** Renders the street flood photo with interactive SVG overlays for `sam-3.1` segmentation masks, a 2-column **"1 · What Vision Sees"** and **"2 · How It Concluded"** formula breakdown card, and a 1-click **"Simulate `<0.70` Self-Check"** button. Clicking anywhere on the waterline updates `click_u` and recalculates the ray angle.
+   - **Step 2 (`MapViewcone.jsx`):** MapLibre GL JS 3D terrain map centered on Rodriguez, Rizal (`[121.142, 14.738]`, zoom `15.5`, pitch `50°`). Renders:
      - Draggable Camera Pin marker.
      - Live FOV viewcone polygon generated via `@turf/sector(cameraPt, radiusKm, bearing1, bearing2)`.
      - Projected target ray line from Camera Pin to `(target_lon, target_lat)`.
      - Flood Extent GeoJSON polygon layer (semi-transparent cyan/blue fill).
      - 3D Extruded OSM Building footprints (`fill-extrusion-color` dynamically styled by flood depth: Green `0m`, Amber `0.5m`, Red `>1.5m`).
-     - Safe Rescue Route GeoJSON line layer (animated dashed neon green).
-   - **Bottom Drawer (`TriageCopilot.jsx`):** Displays `muse-spark-1.3` spatial reasoning logs, multi-turn tool-call traces, and general barangay flood advisories.
+   - **Step 3 (`TriageMap.jsx` + `TriageCopilot.jsx`):** Displays a live 4-phase execution checklist while `muse-spark-1.3` runs tool-calling, visualizes safe rescue corridors vs. severed road segments, presents the general barangay flood advisory, and exports a printable **1-Page MDRRMO Situation Report**.
 
 ---
 
@@ -269,8 +273,8 @@ Provide `muse-spark-1.3` with the following tools:
 When initializing this repository, execute in this exact order:
 1. **Step 1 (Backend Core):** Create `backend/requirements.txt`, `backend/schemas.py`, and `backend/geo_engine.py`. Include a synthetic DEM generator fallback in `geo_engine.py` if `backend/data/rodriguez_dem.tif` is not yet placed in the directory so tests pass immediately.
 2. **Step 2 (Meta AI Wrapper):** Create `backend/meta_agents.py` with SHA256 disk caching, `sam-3.1` segmentation handler, `muse-spark-1.3` visual gauge, and `OSMnx` tool-calling functions.
-3. **Step 3 (FastAPI Server):** Create `backend/main.py` with CORS enabled and mount all 5 endpoints.
-4. **Step 4 (Frontend UI):** Scaffold Vite + React + Tailwind + MapLibre GL + Turf.js in `frontend/` and implement the split-screen Viewcone + Photo Inspector interface pre-loaded with the 3 Rodriguez scenarios.
+3. **Step 3 (FastAPI Server):** Create `backend/main.py` with CORS enabled and mount all endpoints.
+4. **Step 4 (Frontend UI):** Scaffold Vite + React + Tailwind + MapLibre GL + Turf.js in `frontend/` and implement the 3-step Viewcone + Photo Inspector + Triage Copilot interface.
 
 ---
 
@@ -278,17 +282,17 @@ When initializing this repository, execute in this exact order:
 
 To qualify for the Meta Hackathon Bonus Categories (9.1 open-weight is dropped and not claimed; see below), implement the following architectural additions:
 
-### 9.1 Best Build on Meta Open Weight Models (,000) - DROPPED, NOT CLAIMED
+### 9.1 Best Build on Meta Open Weight Models ($5,000) - DROPPED, NOT CLAIMED
 - **Status (2026-10-27):** This category is intentionally NOT pursued and must not be claimed in the UI, API, logs, or submission materials. No open-weight model is served (no Fireworks/Baseten/Modal/vLLM/Ollama endpoint); the area advisory is rule-based (no ticket formatting model), and telemetry is recorded in backend/outputs/dispatch_telemetry.log as plain advisory telemetry.
 - Do not reintroduce open-weight branding, badges, verification logs, or provider claims unless a real open-weight deployment exists and is exercised end-to-end.
 
 ### 9.2 Best Agentic Use-Case ($5,000)
 - **Requirement:** Demonstrate true multi-step autonomous decision-making and tool coordination rather than a single prompt-response call.
 - **Implementation (`run_autonomous_triage_agent` in `backend/meta_agents.py`):**
-  Implement a deterministic 4-turn state machine orchestrated by `muse-spark-1.3` / `muse-spark-open` that streams real-time step updates to the frontend `TriageCopilot.jsx` drawer:
+  Implement a deterministic 4-turn state machine orchestrated by `muse-spark-1.3` that streams real-time step updates to the frontend `TriageCopilot.jsx` drawer:
   1. **Step 1 (Perception & Self-Check):** Agent calls `analyze_water_level_with_sam3()`. If `confidence_score < 0.70`, agent automatically re-prompts `sam-3.1` with secondary fallback references (`"fence"`, `"utility pole"`, `"sidewalk curb"`).
   2. **Step 2 (Hydro-Spatial Projection):** Agent calls `project_photo_to_flood_shapefile()` to generate the 3D WSE surface and queries `get_inundated_structures()`.
-  3. **Step 3 (Dynamic Graph Rerouting):** Agent inspects affected clusters where `depth_m > 1.0`, selects the nearest MDRRMO evacuation center, and calls `compute_safe_rescue_route(max_passable_depth_m=0.5)`. If the primary route fails or is completely severed by deep water (`>0.5m`), the agent autonomously retries with `vehicle_type="amphibious_rubber_boat"` (`max_passable_depth_m=2.5`).
+  3. **Step 3 (Dynamic Graph Rerouting):** Agent inspects affected clusters where `depth_m > 1.0`, selects the nearest MDRRMO evacuation center, and calls `compute_safe_rescue_route(max_passable_depth_m=0.5)`. If the primary route fails or is completely severed by deep water (`>0.5m`), the agent autonomously retries with `vehicle_type="amphibious_rubber_boat"` (`max_passable_depth_m=10.0`).
   4. **Step 4 (General Area Advisory):** Agent calls `generate_area_advisory()` to issue ONE barangay-level advisory from aggregate counts: residents are told what to do and where to go, responders are staged generally at the safe evacuation centre with road-closure and street-sweep actions. No building cluster, house, or address is dispatched to, and no occupant count is invented.
 
 ### 9.3 Muse Image / Muse Wonder Integration - REMOVED, NOT CLAIMED
