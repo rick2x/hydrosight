@@ -16,6 +16,7 @@ import rasterio
 from pyproj import Transformer
 from rasterio.features import shapes
 from rasterio.transform import from_origin
+from rasterio.warp import calculate_default_transform, reproject, Resampling
 from rasterio.windows import Window, from_bounds
 from shapely.geometry import LineString, MultiPolygon, Point, Polygon, box, mapping, shape
 from shapely.ops import unary_union
@@ -164,14 +165,67 @@ SCENARIO_ZONES = [
 ]
 
 
+def _normalize_dem_crs(target_path: Path, desired_epsg: int = 32651) -> Path:
+    """
+    Validate that the DEM is in EPSG:32651 (WGS84 UTM Zone 51N).
+    If in PRS92 (ESRI:102457 / EPSG:31251) or another CRS, reprojects in-place
+    to prevent ~162m datum shifts and exaggerated flood spreads.
+    """
+    if not target_path.exists():
+        return target_path
+    try:
+        with rasterio.open(target_path) as src:
+            is_matching = (
+                src.crs is not None
+                and (src.crs.to_epsg() == desired_epsg or src.crs == rasterio.crs.CRS.from_epsg(desired_epsg))
+            )
+            if is_matching:
+                return target_path
+            src_crs = src.crs
+            src_res = src.res
+            src_nodata = src.nodata if src.nodata is not None else -9999.0
+            src_meta = src.meta.copy()
+
+        temp_reproj = target_path.with_name(f"{target_path.stem}_reproj_{uuid.uuid4().hex[:8]}.tif")
+        target_crs_str = f"EPSG:{desired_epsg}"
+        with rasterio.open(target_path) as src:
+            transform, width, height = calculate_default_transform(
+                src_crs, target_crs_str, src.width, src.height, *src.bounds, resolution=src_res
+            )
+            src_meta.update({
+                "crs": target_crs_str,
+                "transform": transform,
+                "width": width,
+                "height": height,
+                "nodata": src_nodata,
+            })
+            with rasterio.open(temp_reproj, "w", **src_meta) as dst:
+                reproject(
+                    source=rasterio.band(src, 1),
+                    destination=rasterio.band(dst, 1),
+                    src_transform=src.transform,
+                    src_crs=src_crs,
+                    dst_transform=transform,
+                    dst_crs=target_crs_str,
+                    resampling=Resampling.bilinear,
+                    src_nodata=src_nodata,
+                    dst_nodata=src_nodata,
+                )
+        shutil.move(temp_reproj, target_path)
+    except Exception:
+        pass
+    return target_path
+
+
 def ensure_dem_exists(dem_path: Optional[str] = None) -> Path:
     """
     Ensure that the local DEM raster exists in EPSG:32651.
     Copies from repo ./dem/ if available, or generates a synthetic DEM fallback.
+    Automatically normalizes the DEM to EPSG:32651 if another CRS (e.g. PRS92) is loaded.
     """
     target_path = Path(dem_path) if dem_path else DEFAULT_DEM_PATH
     if target_path.exists():
-        return target_path
+        return _normalize_dem_crs(target_path)
 
     target_path.parent.mkdir(parents=True, exist_ok=True)
     repo_dem = ROOT_DIR / "dem" / "rodriguez_cop30_10m_utm51n.tif"
