@@ -715,7 +715,7 @@ export default function MapViewcone({
     }
   };
 
-  const groundDem = floodProjection?.cam_ground_dem_m ?? floodProjection?.ground_dem_m ?? 34.54;
+  const groundDem = floodProjection?.ground_dem_m ?? floodProjection?.cam_ground_dem_m ?? 34.54;
   const waterDepth = floodProjection?.measured_depth_m ?? cameraParams.water_depth_m ?? 1.35;
   const wse = floodProjection?.water_surface_elev_m ?? Number((groundDem + waterDepth).toFixed(2));
   const targetLat = floodProjection?.target_lat ?? 14.74964;
@@ -755,7 +755,7 @@ export default function MapViewcone({
         <div>
           <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
             <h2 style={{ fontSize: "15px", fontWeight: 600, margin: 0, color: "var(--text)" }}>
-              Step 2 · 3D hydro-spatial terrain & rescue corridor
+              Step 2 · 3D hydro-spatial terrain & viewcone projection
             </h2>
             {isMapComputing && (
               <span
@@ -796,16 +796,6 @@ export default function MapViewcone({
           >
             {isCameraLocked ? <Lock size={12} color="var(--positive)" /> : <MapPin size={12} color="var(--accent)" />}
             <span>{isCameraLocked ? "Pin anchored" : "Pin mobile"}</span>
-          </button>
-          <button
-            type="button"
-            className="btn-secondary"
-            onClick={handleFocusRoute}
-            style={{ fontSize: "12px", padding: "0 10px" }}
-            title="Focus and frame entire safe escape route corridor"
-          >
-            <Navigation size={12} color="var(--accent)" />
-            <span>Corridor</span>
           </button>
           <button
             type="button"
@@ -1109,7 +1099,7 @@ export default function MapViewcone({
           >
             <RefreshCw size={12} className="spin" color="var(--accent)" />
             <span>
-              {projectionLoading ? "Recalculating DEM flood surface..." : "Routing safe escape corridor..."}
+              {projectionLoading ? "Recalculating DEM flood surface..." : "Updating 3D flood projection..."}
             </span>
           </div>
         )}
@@ -1146,19 +1136,21 @@ export default function MapViewcone({
           }}
         >
           <span style={{ fontWeight: 600, color: "var(--text)" }}>Legend:</span>
-          <span style={{ display: "inline-flex", alignItems: "center", gap: "5px", color: "var(--accent-strong)", fontWeight: 600 }}>
-            <span
-              style={{
-                width: "14px",
-                height: "5px",
-                backgroundColor: "#0284c7",
-                border: "1px solid #ffffff",
-                borderRadius: "2px",
-                display: "inline-block",
-              }}
-            />
-            Escape route
-          </span>
+          {routeCoords && routeCoords.length >= 2 && (
+            <span style={{ display: "inline-flex", alignItems: "center", gap: "5px", color: "var(--accent-strong)", fontWeight: 600 }}>
+              <span
+                style={{
+                  width: "14px",
+                  height: "5px",
+                  backgroundColor: "#0284c7",
+                  border: "1px solid #ffffff",
+                  borderRadius: "2px",
+                  display: "inline-block",
+                }}
+              />
+              Escape route
+            </span>
+          )}
           <span style={{ display: "inline-flex", alignItems: "center", gap: "4px", color: "var(--muted)" }}>
             <span style={{ width: "8px", height: "8px", backgroundColor: "#15803d", borderRadius: "1px", display: "inline-block" }} />
             &lt;0.5m ({summary.low_depth_count})
@@ -1178,113 +1170,6 @@ export default function MapViewcone({
         </div>
       </div>
 
-      {/* Hydrological Raycast & WSE Cross-Section Profile (Signature Craft Element) */}
-      <div
-        style={{
-          border: "1px solid var(--border)",
-          borderRadius: "6px",
-          padding: "10px 12px",
-          backgroundColor: "var(--surface)",
-          display: "flex",
-          flexDirection: "column",
-          gap: "8px",
-        }}
-      >
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: "12.5px", flexWrap: "wrap", gap: "6px" }}>
-          <strong style={{ color: "var(--text)", fontWeight: 600 }}>
-            Hydrological elevation profile (WSE = Z_DEM + h_w)
-          </strong>
-          <span className="mono-id" style={{ color: "var(--muted)", fontSize: "12px" }}>
-            {wse.toFixed(2)} m MSL = {groundDem.toFixed(2)} m ground + {waterDepth.toFixed(2)} m depth
-          </span>
-        </div>
-
-        <svg
-          viewBox="0 0 640 100"
-          style={{
-            width: "100%",
-            height: "100px",
-            display: "block",
-            backgroundColor: "var(--raised)",
-            border: "1px solid var(--border)",
-            borderRadius: "4px",
-          }}
-          role="img"
-          aria-label="Topographic cross section profile showing camera ray, DEM ground, and water surface elevation"
-        >
-          <line x1="44" y1="20" x2="620" y2="20" stroke="#e2e8f0" strokeWidth="1" />
-          <line x1="44" y1="50" x2="620" y2="50" stroke="#e2e8f0" strokeWidth="1" />
-          <line x1="44" y1="80" x2="620" y2="80" stroke="#e2e8f0" strokeWidth="1" />
-
-          <text x="6" y="24" fontSize="11" fill="var(--muted)" fontFamily="var(--font)">
-            {(groundDem + 3.0).toFixed(1)}m
-          </text>
-          <text x="6" y="54" fontSize="11" fill="var(--muted)" fontFamily="var(--font)">
-            {wse.toFixed(1)}m
-          </text>
-          <text x="6" y="84" fontSize="11" fill="var(--muted)" fontFamily="var(--font)">
-            {groundDem.toFixed(1)}m
-          </text>
-
-          {/* Connected Water Basin Profile */}
-          <polygon
-            points="44,50 585,50 558,78 415,80 220,80 88,77 44,76"
-            fill="rgba(14, 116, 144, 0.22)"
-          />
-          <line x1="44" y1="50" x2="585" y2="50" stroke="#0e7490" strokeWidth="2" />
-
-          {/* Submerged Bare-Earth Street DEM Profile */}
-          <polyline
-            points="44,76 88,77 220,80 355,80 465,79 558,78 585,50 620,38"
-            fill="none"
-            stroke="#0f172a"
-            strokeWidth="2.2"
-          />
-
-          {/* Vertical Camera Plumb Line */}
-          <line x1="88" y1="22" x2="88" y2="77" stroke="#0f172a" strokeWidth="1.4" strokeDasharray="2,2" />
-          <circle cx="88" cy="77" r="3" fill="#0f172a" />
-          <circle cx="88" cy="50" r="3" fill="#0e7490" />
-          <circle cx="88" cy="22" r="4" fill="#0f172a" />
-
-          {/* Camera Optical Raycast to Waterline */}
-          <line x1="88" y1="22" x2="355" y2="50" stroke="#b91c1c" strokeWidth="1.6" strokeDasharray="4,3" />
-          <line x1="355" y1="50" x2="355" y2="80" stroke="#b91c1c" strokeWidth="1.4" strokeDasharray="2,2" />
-          <circle cx="355" cy="50" r="4" fill="#b91c1c" />
-
-          <text x="96" y="19" fontSize="11" fill="var(--text)" fontFamily="var(--font)" fontWeight="500">
-            Camera @ 0m (in {waterDepth.toFixed(2)}m water)
-          </text>
-          <text x="364" y="46" fontSize="11" fill="#0e7490" fontFamily="var(--font)" fontWeight="600">
-            Target @ ~{cameraParams.est_distance_m}m (model est.) · WSE {wse.toFixed(2)}m
-          </text>
-        </svg>
-
-        {/* Rescue Corridor Summary Subline */}
-        <div
-          style={{
-            display: "flex",
-            justifyContent: "space-between",
-            alignItems: "center",
-            fontSize: "12px",
-            color: "var(--muted)",
-            flexWrap: "wrap",
-            gap: "8px",
-          }}
-        >
-          <span style={{ display: "inline-flex", alignItems: "center", gap: "6px" }}>
-            <Navigation size={13} color="#0284c7" />
-            <span style={{ color: "var(--text)", fontWeight: 500 }}>Escape corridor:</span>{" "}
-            <strong style={{ color: "var(--text)" }}>
-              {triageData?.evacuation_center_name || "Designated evacuation centre"}
-            </strong>
-          </span>
-          <span className="num">
-            Distance: <strong style={{ color: "var(--accent-strong)" }}>{Math.round(triageData?.route_distance_m ?? 578)} m</strong> · ETA{" "}
-            <strong style={{ color: "var(--text)" }}>{(triageData?.eta_minutes ?? 3.6).toFixed(1)} min</strong>
-          </span>
-        </div>
-      </div>
     </section>
   );
 }

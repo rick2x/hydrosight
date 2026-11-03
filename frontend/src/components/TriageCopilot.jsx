@@ -97,45 +97,44 @@ export default function TriageCopilot({
   <meta charset="utf-8" />
   <title>${esc(docId)} — HydroSight AI Technical Situation Report</title>
   <style>
-    @page { size: A4 portrait; margin: 9mm 11mm; }
+    @page { size: A4 portrait; margin: 6mm 8mm; }
     * { box-sizing: border-box; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
     body {
       font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
       color: #0f172a;
       background: #e2e8f0;
       margin: 0;
-      padding: 20px 12px;
-      font-size: 10.5px;
-      line-height: 1.38;
+      padding: 16px 12px;
+      font-size: 8.5px;
+      line-height: 1.28;
     }
     .sheet {
       max-width: 210mm;
       margin: 0 auto;
       background: #ffffff;
-      padding: 11mm 13mm;
+      padding: 7mm 9mm;
       border: 1px solid #94a3b8;
-      box-shadow: 0 8px 24px rgba(15, 23, 42, 0.12);
+      box-shadow: 0 4px 16px rgba(15, 23, 42, 0.10);
     }
     .toolbar {
       max-width: 210mm;
-      margin: 0 auto 10px auto;
+      margin: 0 auto 8px auto;
       display: flex;
       justify-content: space-between;
       align-items: center;
       background: #0f172a;
       color: #f8fafc;
-      padding: 8px 14px;
-      font-size: 11.5px;
+      padding: 6px 12px;
+      font-size: 11px;
     }
     .toolbar button {
       background: #ffffff;
       color: #0f172a;
       border: 1px solid #cbd5e1;
-      padding: 5px 14px;
+      padding: 4px 12px;
       font-weight: 700;
-      font-size: 11.5px;
+      font-size: 11px;
       cursor: pointer;
-      letter-spacing: 0.02em;
     }
     .toolbar button:hover { background: #f1f5f9; }
     .mono { font-family: "JetBrains Mono", "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace; font-variant-numeric: tabular-nums; }
@@ -144,30 +143,30 @@ export default function TriageCopilot({
     /* Document Header */
     .doc-header {
       display: grid;
-      grid-template-columns: 1.45fr 1fr;
-      gap: 12px;
-      border-bottom: 2.5px solid #0f172a;
-      padding-bottom: 8px;
-      margin-bottom: 8px;
+      grid-template-columns: 1.55fr 1fr;
+      gap: 10px;
+      border-bottom: 2px solid #0f172a;
+      padding-bottom: 5px;
+      margin-bottom: 5px;
     }
     .agency-kicker {
-      font-size: 8.5px;
+      font-size: 7.5px;
       font-weight: 700;
-      letter-spacing: 0.08em;
+      letter-spacing: 0.07em;
       text-transform: uppercase;
       color: #334155;
-      margin: 0 0 2px 0;
+      margin: 0 0 1px 0;
     }
     .agency-title {
-      font-size: 14.5px;
+      font-size: 12.5px;
       font-weight: 800;
       letter-spacing: -0.01em;
       color: #0f172a;
-      margin: 0 0 2px 0;
+      margin: 0 0 1px 0;
       text-transform: uppercase;
     }
     .agency-sub {
-      font-size: 10px;
+      font-size: 8.5px;
       font-weight: 600;
       color: #1e293b;
       margin: 0;
@@ -175,38 +174,38 @@ export default function TriageCopilot({
     .ctrl-table {
       width: 100%;
       border-collapse: collapse;
-      font-size: 9px;
+      font-size: 8px;
     }
     .ctrl-table td {
       border: 1px solid #334155;
-      padding: 2.5px 6px;
+      padding: 1.5px 5px;
     }
     .ctrl-label {
       font-weight: 700;
       text-transform: uppercase;
       color: #334155;
       background: #f1f5f9;
-      width: 38%;
-      letter-spacing: 0.03em;
+      width: 36%;
+      letter-spacing: 0.02em;
     }
     .status-banner {
       display: flex;
       justify-content: space-between;
       align-items: center;
-      border: 1.5px solid #0f172a;
+      border: 1px solid #0f172a;
       background: ${isSevere ? "#fef2f2" : "#fffbeb"};
-      padding: 5px 9px;
-      margin-bottom: 8px;
+      padding: 3px 7px;
+      margin-bottom: 5px;
     }
     .status-banner-left {
-      font-size: 11px;
+      font-size: 9.5px;
       font-weight: 800;
       color: ${isSevere ? "#7f1d1d" : "#78350f"};
       text-transform: uppercase;
       letter-spacing: 0.02em;
     }
     .status-banner-right {
-      font-size: 9.5px;
+      font-size: 8.5px;
       font-weight: 700;
       color: #0f172a;
     }
@@ -215,19 +214,19 @@ export default function TriageCopilot({
     .sec-head {
       background: #0f172a;
       color: #ffffff;
-      font-size: 9.5px;
+      font-size: 8.5px;
       font-weight: 700;
       text-transform: uppercase;
-      letter-spacing: 0.06em;
-      padding: 3px 7px;
-      margin: 8px 0 4px 0;
+      letter-spacing: 0.05em;
+      padding: 2.5px 6px;
+      margin: 5px 0 3px 0;
       display: flex;
       justify-content: space-between;
       align-items: center;
     }
     .sec-head span.sec-meta {
       font-weight: 500;
-      font-size: 8.5px;
+      font-size: 7.5px;
       color: #cbd5e1;
       text-transform: none;
       letter-spacing: 0;
@@ -237,87 +236,102 @@ export default function TriageCopilot({
     table.data-table {
       width: 100%;
       border-collapse: collapse;
-      font-size: 9.5px;
-      margin-bottom: 4px;
+      font-size: 8px;
+      margin-bottom: 3px;
     }
     table.data-table th, table.data-table td {
       border: 1px solid #64748b;
-      padding: 3.5px 6px;
+      padding: 2px 4.5px;
       text-align: left;
       vertical-align: top;
     }
     table.data-table th {
       background: #f1f5f9;
       font-weight: 700;
-      font-size: 8.5px;
+      font-size: 7.5px;
       text-transform: uppercase;
-      letter-spacing: 0.04em;
+      letter-spacing: 0.03em;
       color: #1e293b;
     }
     .col-split {
       display: grid;
       grid-template-columns: 1fr 1fr;
-      gap: 8px;
+      gap: 6px;
     }
     .box-panel {
       border: 1px solid #64748b;
-      padding: 5px 7px;
-      font-size: 9.5px;
+      padding: 3.5px 5.5px;
+      font-size: 8px;
+      line-height: 1.25;
     }
     .box-panel-title {
-      font-size: 8.5px;
+      font-size: 7.5px;
       font-weight: 800;
       text-transform: uppercase;
-      letter-spacing: 0.04em;
+      letter-spacing: 0.03em;
       color: #0f172a;
       border-bottom: 1px solid #cbd5e1;
-      padding-bottom: 2px;
-      margin-bottom: 4px;
+      padding-bottom: 1.5px;
+      margin-bottom: 2.5px;
     }
     ol.compact-list {
       margin: 0;
-      padding-left: 15px;
+      padding-left: 12px;
     }
     ol.compact-list li {
-      margin-bottom: 2.5px;
+      margin-bottom: 1.5px;
     }
     .sig-grid {
       display: grid;
       grid-template-columns: repeat(3, 1fr);
-      gap: 8px;
-      margin-top: 8px;
+      gap: 6px;
+      margin-top: 5px;
     }
     .sig-box {
       border: 1px solid #64748b;
-      padding: 4px 7px;
-      font-size: 8.5px;
+      padding: 3px 5px;
+      font-size: 7.5px;
     }
     .sig-role {
       font-weight: 700;
       text-transform: uppercase;
       color: #475569;
-      letter-spacing: 0.04em;
+      letter-spacing: 0.03em;
     }
     .sig-line {
-      margin-top: 12px;
+      margin-top: 8px;
       border-top: 1px solid #0f172a;
-      padding-top: 2px;
+      padding-top: 1.5px;
       font-weight: 700;
       color: #0f172a;
     }
     .doc-footer {
-      margin-top: 6px;
-      padding-top: 4px;
+      margin-top: 4px;
+      padding-top: 3px;
       border-top: 1px solid #94a3b8;
-      font-size: 8px;
+      font-size: 7px;
       color: #475569;
       display: flex;
       justify-content: space-between;
-      gap: 8px;
+      gap: 6px;
     }
     @media print {
-      body { background: #ffffff; padding: 0; }
-      .sheet { border: none; box-shadow: none; padding: 0; max-width: 100%; }
+      @page { size: A4 portrait; margin: 6mm 8mm; }
+      html, body {
+        height: 100%;
+        background: #ffffff !important;
+        padding: 0 !important;
+        margin: 0 !important;
+      }
+      .sheet {
+        border: none !important;
+        box-shadow: none !important;
+        padding: 0 !important;
+        margin: 0 !important;
+        max-width: 100% !important;
+        page-break-inside: avoid !important;
+        break-inside: avoid !important;
+      }
       .no-print { display: none !important; }
     }
   </style>
@@ -325,7 +339,7 @@ export default function TriageCopilot({
 <body>
   <div class="toolbar no-print">
     <div>
-      <strong>OFFICIAL SITUATION REPORT PREVIEW</strong> · <span class="mono">${esc(docId)}</span> (Formatted for 1-Page A4 / Letter PDF)
+      <strong>OFFICIAL SITUATION REPORT PREVIEW</strong> · <span class="mono">${esc(docId)}</span>
     </div>
     <button onclick="window.print()">PRINT / SAVE OFFICIAL PDF</button>
   </div>
@@ -604,7 +618,7 @@ export default function TriageCopilot({
 
     <div class="doc-footer">
       <span><strong>LIMITATION NOTICE:</strong> Screening-level triage derived from 10 m resampled DEM ground-vs-WSE differentials and OpenStreetMap footprints. Verify depths on site before life-safety dispatch.</span>
-      <span class="mono">${esc(docId)} · PAGE 1 OF 1</span>
+      <span class="mono">${esc(docId)} · MDRRMO Flood Triage Brief</span>
     </div>
   </div>
 </body>
@@ -771,18 +785,6 @@ export default function TriageCopilot({
             </p>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
-            {advisory && (
-              <button
-                type="button"
-                className="btn-secondary"
-                onClick={handleExportSituationReport}
-                style={{ fontSize: "12px", height: "28px", padding: "0 10px" }}
-                title="Open a printable 1-page MDRRMO Flood Triage Situation Report with SAM 3.1 math, DEM WSE, routing, and advisory"
-              >
-                <FileText size={12} color="var(--accent)" />
-                <span>Print 1-Page MDRRMO Report</span>
-              </button>
-            )}
             <span className={`status-pill ${!advisory ? (triageLoading ? "warning" : "neutral") : advisory.advisory_level === "SEVERE" ? "critical" : advisory.advisory_level === "LOW" ? "positive" : "warning"}`}>
               {advisory ? `Advisory: ${advisory.advisory_level}` : triageLoading ? "Synthesizing..." : "Standby"}
             </span>
@@ -966,13 +968,13 @@ export default function TriageCopilot({
 
               <button
                 type="button"
-                className="btn-secondary"
+                className="btn-primary"
                 onClick={handleExportSituationReport}
-                style={{ fontSize: "12px", height: "30px" }}
-                title="Open a printable 1-page MDRRMO Flood Triage Situation Report with SAM 3.1 math, DEM WSE, routing, and advisory"
+                style={{ fontSize: "12px", height: "30px", padding: "0 14px" }}
+                title="Generate printable MDRRMO Flood Triage Situation Report (PDF)"
               >
-                <FileText size={12} color="var(--accent)" />
-                <span>Print 1-Page MDRRMO Situation Report</span>
+                <FileText size={12} />
+                <span>Export Situation Report (PDF)</span>
               </button>
             </div>
           </div>

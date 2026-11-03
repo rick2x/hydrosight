@@ -15,7 +15,7 @@
 2. **Visual Perception (`sam-3.1`):** Performs zero-shot promptable concept segmentation on the street photo to extract binary masks and bounding boxes for `"floodwater"` and submerged vertical scale reference objects (`"person"`, `"car"`, `"tricycle"`, `"gate"`, `"building entrance"`), with an automated or operator-triggered `< 0.70` confidence self-check loop that re-prompts `sam-3.1` using fallback scale concepts (`"fence"`, `"utility pole"`, `"sidewalk curb"`).
 3. **Visual Hydrological Gauging (`muse-spark-1.3`):** Analyzes the annotated image and rasterized SAM 3.1 masks to describe what is visible in the scene (`scene_description`), derive how the flood depth conclusion was reached (`conclusion_summary`: `reference_standard_height_m * submerged_ratio = estimated_water_depth_m`), and estimate forward distance from the camera (`estimated_distance_from_camera_m`) in strict JSON.
 4. **Raycast-to-DEM Physics Engine (`Python / Rasterio / GeoPandas`):** Projects the camera coordinate along the target ray bearing onto a local Digital Elevation Model (`rodriguez_srtmgl1_10m_utm51n.tif` in `EPSG:32651`), samples ground elevation ($Z_{DEM}$), computes Water Surface Elevation ($WSE = Z_{DEM} + h_w$), flood-fills the connected lowland catchment where $DEM \le WSE$, and vectorizes the result into downloadable `.shp` and `.geojson` files.
-5. **Autonomous Triage & Routing (`muse-spark-1.3` Tool-Calling):** Uses multi-turn function-calling over an `OSMnx`/`NetworkX` road graph to verify dry evacuation centers, clip flooded road segments (`depth > 0.5m` for wheeled rescue trucks; autonomous retry with `amphibious_rubber_boat` when primary routes are severed), compute safe rescue routes, generate one general barangay flood advisory (what residents and responders should do; never a per-house rescue dispatch), and export a printable 1-page MDRRMO Situation Report.
+5. **Autonomous Triage & Routing (`muse-spark-1.3` Tool-Calling):** Uses multi-turn function-calling over an `OSMnx`/`NetworkX` road graph to verify dry evacuation centers, clip flooded road segments (`depth > 0.5m` for wheeled rescue trucks; autonomous retry with `amphibious_rubber_boat` when primary routes are severed), compute safe rescue routes, generate one general barangay flood advisory (what residents and responders should do; never a per-house rescue dispatch), and export a printable MDRRMO Situation Report (PDF).
 6. **Admin Flood Registry & Overlapping Prediction Consolidation (`backend/incidents_store.py`):** Groups spatially intersecting reports in `EPSG:32651`, reconciles overlapping WSE measurements via 2D Inverse-Distance + SAM 3.1 confidence weighting (`confidence_weighted`, `max_envelope`, or `highest_confidence`), flags high-variance WSE outliers, and evaluates OSM buildings once against the unified flood surface so structures are never double-counted.
 
 ---
@@ -46,7 +46,7 @@ rodriguez-flood-triage/
     │   │   ├── PhotoInspector.jsx     # Step 1: Street photo, SAM 3.1 mask overlay, visual breakdown & self-check
     │   │   ├── MapViewcone.jsx        # Step 2: MapLibre GL 3D terrain, camera pin, Turf.js FOV cone
     │   │   ├── TriageMap.jsx          # Step 3: Safe rescue corridor & severed road visualization
-    │   │   ├── TriageCopilot.jsx      # Step 3: Agent trace, barangay advisory & printable 1-page SitRep
+    │   │   ├── TriageCopilot.jsx      # Step 3: Agent trace, barangay advisory & printable SitRep (PDF)
     │   │   └── AdminDashboard.jsx     # Admin Registry: Overlap clusters, reconciliation & 3D union map
     │   ├── App.jsx
     │   └── main.jsx
@@ -258,13 +258,14 @@ Provide `muse-spark-1.3` with the following tools:
 
 1. **Guided 3-Step Operator Workbench + Admin Registry:**
    - **Step 1 (`PhotoInspector.jsx`):** Renders the street flood photo with interactive SVG overlays for `sam-3.1` segmentation masks, a 2-column **"1 · What Vision Sees"** and **"2 · How It Concluded"** formula breakdown card, and a 1-click **"Simulate `<0.70` Self-Check"** button. Clicking anywhere on the waterline updates `click_u` and recalculates the ray angle.
-   - **Step 2 (`MapViewcone.jsx`):** MapLibre GL JS 3D terrain map centered on Rodriguez, Rizal (`[121.142, 14.738]`, zoom `15.5`, pitch `50°`). Renders:
+   - **Step 2 (`MapViewcone.jsx`):** MapLibre GL JS 3D terrain map centered on Rodriguez, Rizal (`[121.142, 14.738]`, zoom `15.5`, pitch `50°`). Focuses strictly on 3D photogrammetric calibration and DEM inundation modeling prior to evacuation triage:
      - Draggable Camera Pin marker.
      - Live FOV viewcone polygon generated via `@turf/sector(cameraPt, radiusKm, bearing1, bearing2)`.
      - Projected target ray line from Camera Pin to `(target_lon, target_lat)`.
      - Flood Extent GeoJSON polygon layer (semi-transparent cyan/blue fill).
      - 3D Extruded OSM Building footprints (`fill-extrusion-color` dynamically styled by flood depth: Green `0m`, Amber `0.5m`, Red `>1.5m`).
-   - **Step 3 (`TriageMap.jsx` + `TriageCopilot.jsx`):** Displays a live 4-phase execution checklist while `muse-spark-1.3` runs tool-calling, visualizes safe rescue corridors vs. severed road segments, presents the general barangay flood advisory, and exports a printable **1-Page MDRRMO Situation Report**.
+     *(Note: Evacuation corridors and road severance routing are computed and visualized exclusively in Step 3, keeping Step 2 unencumbered by premature routing controls or artificial 2D slices.)*
+   - **Step 3 (`TriageMap.jsx` + `TriageCopilot.jsx`):** Displays a live 4-phase execution checklist while `muse-spark-1.3` runs tool-calling, visualizes safe rescue corridors vs. severed road segments, presents the general barangay flood advisory, and exports an official, printable **MDRRMO Situation Report (PDF)** formatted as a concise executive brief.
 
 ---
 

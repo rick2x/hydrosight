@@ -787,8 +787,12 @@ def project_photo_to_flood_shapefile(
         wse_low = wse - dem_uncertainty
         wse_high = wse + dem_uncertainty
 
-        # Real DEM elevation profile along the camera ray (point samples only)
-        for frac in [0.0, 0.25, 0.50, 0.75, 1.0, 1.30, 1.60]:
+        cam_water_depth = max(0.0, round(wse - cam_ground_elev, 2))
+        camera_in_water = bool(cam_water_depth >= 0.05)
+
+        # Real DEM elevation profile along the camera ray (sampled smoothly)
+        sample_fractions = [round(i * 0.1, 2) for i in range(17)]
+        for frac in sample_fractions:
             d_m = round(est_distance_m * frac, 1)
             px = cam_x + d_m * math.sin(target_bearing_rad)
             py = cam_y + d_m * math.cos(target_bearing_rad)
@@ -1015,7 +1019,8 @@ def project_photo_to_flood_shapefile(
         "target_lon": round(target_lon, 6),
         "ground_dem_m": round(ground_elev, 2),
         "cam_ground_dem_m": round(cam_ground_elev, 2),
-        "camera_in_water": True,
+        "cam_water_depth_m": round(cam_water_depth, 2),
+        "camera_in_water": camera_in_water,
         "profile_points": profile_points,
         "measured_depth_m": round(water_depth_m, 2),
         "water_surface_elev_m": round(wse, 2),

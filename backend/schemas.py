@@ -123,6 +123,7 @@ class ProjectFloodResponse(BaseModel):
     target_lon: float
     ground_dem_m: float
     cam_ground_dem_m: Optional[float] = None
+    cam_water_depth_m: Optional[float] = Field(None, description="Water depth at camera location: max(0, WSE - cam_ground_dem_m)")
     camera_in_water: bool = True
     profile_points: Optional[List[Dict[str, float]]] = None
     measured_depth_m: float

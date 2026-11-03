@@ -12,7 +12,7 @@ See [`SPEC.md`](SPEC.md) for the complete technical specification and mathematic
   - **Visual Perception & Geometric Sensor (`backend/meta_agents.py`):** Live Meta Model API integration with `sam-3.1` (`POST /v1/responses`) and `muse-spark-1.3` (`POST /v1/chat/completions`), pixel-rasterized submergence measurement (`_compute_mask_geometry`), explicit visual scene description & formula derivation (`scene_description` + `conclusion_summary`), EXIF GPS & compass bearing extraction (`extract_exif_geotag`), and an interactive `< 0.70` confidence self-check loop that re-prompts `sam-3.1` with fallback scale concepts (`"fence"`, `"utility pole"`, `"sidewalk curb"`).
   - **3D Hydro-Spatial Physics & Routing Engine (`backend/geo_engine.py`):** `EPSG:32651` camera ray-casting, bilinear 10 m DEM sampling with local vertical uncertainty quadrature (`_dem_uncertainty_m`), 8-neighbor connected basin extraction, OpenStreetMap building inundation depth profiling, `NetworkX` road-edge severance routing, and zipped ESRI Shapefile (`.shp`, `.shx`, `.dbf`, `.prj`) generation.
   - **Admin Multi-Report Overlap Consolidation Engine (`backend/incidents_store.py`):** Spatial IoU & intersection graph clustering in `EPSG:32651`, 2D Inverse-Distance + SAM 3.1 confidence-weighted Water Surface Elevation (WSE) fusion, outlier discrepancy detection (`ΔWSE`), and de-duplicated municipal building and flood extent mapping.
-  - **Interactive 3D Mission Control Frontend (`frontend/src/`):** Guided 3-step Operator Workbench (`PhotoInspector.jsx`, `MapViewcone.jsx`, `TriageMap.jsx`, `TriageCopilot.jsx`) with 4-phase live execution progress, 1-click printable MDRRMO Situation Report export, and `AdminDashboard.jsx` built with React, MapLibre GL 3D terrain/building extrusions, and `@turf/turf` live FOV viewcones.
+  - **Interactive 3D Mission Control Frontend (`frontend/src/`):** Guided 3-step Operator Workbench (`PhotoInspector.jsx`, `MapViewcone.jsx`, `TriageMap.jsx`, `TriageCopilot.jsx`) with 4-phase live execution progress, printable MDRRMO Situation Report export (PDF), and `AdminDashboard.jsx` built with React, MapLibre GL 3D terrain/building extrusions, and `@turf/turf` live FOV viewcones.
 
 ---
 
@@ -28,7 +28,7 @@ See [`SPEC.md`](SPEC.md) for the complete technical specification and mathematic
 3. **Step 3 · Autonomous Spatial Commander & Printable Situation Report (`muse-spark-1.3` Tool-Calling):**
    - Click **"Trigger Autonomous Agent Triage"** (or **"Proceed to Step 3"**).
    - Watch the live 4-phase execution checklist as `muse-spark-1.3` executes `get_inundated_structures`, `list_evacuation_centers`, `compute_safe_rescue_route` (autonomously switching from `6x6 High-Water Rescue Truck` to `amphibious_rubber_boat` when road segments exceed `0.50 m` depth), and `generate_area_advisory`.
-   - Click **"Print 1-Page MDRRMO Situation Report"** or **"Export Certified .SHP Package"**.
+   - Click **"Export Situation Report (PDF)"** or **"Export Certified .SHP Package"**.
 4. **Admin & Overlap Consolidation Mode:**
    - Click **"Admin & Overlap Consolidation"** in the top-right header (and click **"Seed Overlapping Demo Reports"** if empty) to inspect how intersecting field reports in `EPSG:32651` are fused via confidence-weighted WSE surface interpolation and outlier exclusion without double-counting buildings.
 
