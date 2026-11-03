@@ -52,6 +52,8 @@ outputs/
 backend/outputs/
 backend/cache/
 backend/data/*_enriched.parquet
+backend/data/rodriguez_srtmgl1_10m_utm51n.tif
+backend/data/rodriguez_osm_roads.graphml
 backend/data/photos/upload_*.jpg
 backend/data/sample_photos/upload_*.jpg
 backend/data/sample_photos/upload_*.png
@@ -61,6 +63,8 @@ backend/data/sample_photos/*_surge.jpg
 rodriguez_dem_10m.tif
 
 # Design / Browser Inspector Artifacts
+.agents/
+skills-lock.json
 .taste-skill/
 hydro_shots*/
 
