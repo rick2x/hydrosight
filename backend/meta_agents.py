@@ -60,6 +60,15 @@ DISPATCH_LOG_PATH = OUTPUTS_DIR / "dispatch_telemetry.log"
 META_API_KEY = os.environ.get("META_API_KEY", "")
 META_API_BASE_URL = os.environ.get("META_API_BASE_URL", "https://api.meta.ai/v1")
 AGENT_DISPATCH_PROVIDER = os.environ.get("AGENT_DISPATCH_PROVIDER", "Meta AI API")
+try:
+    META_API_TIMEOUT = float(os.environ.get("META_API_TIMEOUT", "60.0") or 60.0)
+except (ValueError, TypeError):
+    META_API_TIMEOUT = 60.0
+
+
+def _get_httpx_timeout(read_seconds: Optional[float] = None) -> httpx.Timeout:
+    read_val = read_seconds if read_seconds is not None else META_API_TIMEOUT
+    return httpx.Timeout(timeout=read_val, connect=15.0, read=read_val, write=30.0, pool=15.0)
 
 # Meta API response caching is disabled by default: every analyze-photo,
 # triage call runs fresh against the live models. Set
@@ -496,7 +505,7 @@ def _query_single_sam3_concept(b64_url: str, concept: str, img_w: int = 1000, im
                 }
             ],
         }
-        with httpx.Client(timeout=14.0) as client:
+        with httpx.Client(timeout=_get_httpx_timeout(min(META_API_TIMEOUT, 30.0))) as client:
             resp = client.post(
                 f"{META_API_BASE_URL}/responses",
                 headers={
@@ -564,6 +573,9 @@ def _query_single_sam3_concept(b64_url: str, concept: str, img_w: int = 1000, im
                         geometry_source=geom_source,
                     )
                 )
+    except httpx.TimeoutException as e:
+        logger.warning(f"SAM 3.1: concept '{concept}' timed out after {min(META_API_TIMEOUT, 30.0)}s: {e}")
+        return [], False
     except Exception as e:
         logger.error(f"SAM 3.1: Exception querying concept '{concept}': {e}", exc_info=True)
         return [], False
@@ -747,7 +759,7 @@ def call_muse_spark_visual_gauge(
 
     try:
         b64_url = _encode_image_b64(image_path)
-        with httpx.Client(timeout=22.0) as client:
+        with httpx.Client(timeout=_get_httpx_timeout(META_API_TIMEOUT)) as client:
             resp = client.post(
                 f"{META_API_BASE_URL}/chat/completions",
                 headers={
@@ -800,6 +812,11 @@ def call_muse_spark_visual_gauge(
                 return gauge, False, False
             else:
                 logger.warning(f"Muse Spark 1.3 returned HTTP {resp.status_code}: {resp.text[:300]}")
+    except httpx.TimeoutException as e:
+        logger.warning(
+            f"Muse Spark 1.3 request timed out after {META_API_TIMEOUT}s: {e}. "
+            "Falling back to baseline visual gauge."
+        )
     except Exception as e:
         logger.error(f"Muse Spark 1.3 exception: {e}", exc_info=True)
 
@@ -1381,7 +1398,7 @@ def _run_spark_commander(
     tools = _commander_tools()
 
     try:
-        with httpx.Client(timeout=30.0) as client:
+        with httpx.Client(timeout=_get_httpx_timeout(META_API_TIMEOUT)) as client:
             for turn in range(1, 9):
                 resp = client.post(
                     f"{META_API_BASE_URL}/chat/completions",

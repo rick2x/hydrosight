@@ -10,5 +10,6 @@ services:
     environment:
       - META_API_KEY=${META_API_KEY:-}
       - META_API_BASE_URL=${META_API_BASE_URL:-https://api.meta.ai/v1}
+      - META_API_TIMEOUT=${META_API_TIMEOUT:-60.0}
       - HYDROSIGHT_CACHE_ENABLED=${HYDROSIGHT_CACHE_ENABLED:-0}
     restart: unless-stopped

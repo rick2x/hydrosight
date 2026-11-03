@@ -669,6 +669,7 @@ def consolidate_flood_incidents(req: ConsolidateFloodRequest) -> ConsolidateFloo
     global_tier_polys: Dict[str, List[Any]] = {"low": [], "medium": [], "critical": []}
     route_features: List[Dict[str, Any]] = []
     severed_features: List[Dict[str, Any]] = []
+    cluster_inundations: List[Dict[str, Any]] = []
 
     with rasterio.open(ensure_dem_exists()) as src:
         full_win = Window(0, 0, src.width, src.height)
@@ -868,6 +869,19 @@ def consolidate_flood_incidents(req: ConsolidateFloodRequest) -> ConsolidateFloo
                     f"Standalone flood basin in Brgy. {brgy.title()} (no overlapping reports; WSE {reconciled_wse:.2f} m MSL retained)."
                 )
 
+            # Evaluate de-duplicated building inundation for THIS cluster at its true reconciled WSE
+            c_txs = [target_utm[inc.incident_id][0] for inc in c_incs]
+            c_tys = [target_utm[inc.incident_id][1] for inc in c_incs]
+            c_center = (float(np.mean(c_txs)), float(np.mean(c_tys)))
+            c_inun = get_inundated_structures(
+                wse_m=reconciled_wse,
+                barangay=brgy,
+                flood_gdf_utm=cluster_gdf_utm,
+                center_utm=c_center,
+                radius_m=max(520.0, float(np.sqrt(cons_area / np.pi) + 120.0)),
+            )
+            cluster_inundations.append(c_inun)
+
             cluster_summaries.append(
                 OverlapClusterSummary(
                     cluster_id=cluster_id,
@@ -981,20 +995,68 @@ def consolidate_flood_incidents(req: ConsolidateFloodRequest) -> ConsolidateFloo
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
-    # 5. Evaluate de-duplicated OSM structures across the entire consolidated flood surface
-    all_tx = [target_utm[inc.incident_id][0] for inc in active_list]
-    all_ty = [target_utm[inc.incident_id][1] for inc in active_list]
-    center_utm = (float(np.mean(all_tx)), float(np.mean(all_ty)))
+    # 5. Evaluate de-duplicated OSM structures across each cluster's true reconciled WSE
+    merged_buildings: Dict[str, Dict[str, Any]] = {}
+    all_crit_infras: List[Dict[str, Any]] = []
+    seen_infra_ids = set()
+    compromised_evac_set = set()
 
-    inundation_res = get_inundated_structures(
+    for c_res in cluster_inundations:
+        for b in c_res.get("buildings_geojson", {}).get("features", []):
+            bid = b["properties"]["building_id"]
+            if bid not in merged_buildings or float(b["properties"].get("flood_depth_m", 0.0)) > float(merged_buildings[bid]["properties"].get("flood_depth_m", 0.0)):
+                merged_buildings[bid] = b
+        for ci in c_res.get("summary", {}).get("critical_infras", []):
+            ci_id = ci.get("building_id") or ci.get("name")
+            if ci_id and ci_id not in seen_infra_ids:
+                seen_infra_ids.add(ci_id)
+                all_crit_infras.append(ci)
+        for ec_n in c_res.get("summary", {}).get("compromised_evac_centers", []):
+            if ec_n:
+                compromised_evac_set.add(ec_n)
+
+    all_bldg_features = list(merged_buildings.values())
+    low_count = sum(1 for b in all_bldg_features if b["properties"].get("risk_tier") == "low")
+    med_count = sum(1 for b in all_bldg_features if b["properties"].get("risk_tier") == "medium")
+    crit_count = sum(1 for b in all_bldg_features if b["properties"].get("risk_tier") == "critical")
+    safe_count = sum(1 for b in all_bldg_features if b["properties"].get("risk_tier") == "safe")
+    affected_count = low_count + med_count + crit_count
+
+    affected_mask_bldgs = [b for b in all_bldg_features if b["properties"].get("risk_tier") in ("low", "medium", "critical")]
+    affected_footprint_sqm = round(sum(float(b["properties"].get("footprint_sqm", 0.0)) for b in affected_mask_bldgs), 1)
+
+    schools_count = sum(1 for b in affected_mask_bldgs if b["properties"].get("infra_category") == "education")
+    health_count = sum(1 for b in affected_mask_bldgs if b["properties"].get("infra_category") == "healthcare")
+    civic_count = sum(1 for b in affected_mask_bldgs if b["properties"].get("infra_category") == "emergency_civic")
+    comm_count = sum(1 for b in affected_mask_bldgs if b["properties"].get("infra_category") == "commercial_logistics")
+    rel_count = sum(1 for b in affected_mask_bldgs if b["properties"].get("infra_category") == "religious")
+    res_count = sum(1 for b in affected_mask_bldgs if b["properties"].get("infra_category") == "residential")
+
+    inundated_summary = InundatedStructureSummary(
+        barangay=primary_brgy,
         wse_m=mean_global_wse,
-        barangay=primary_brgy if primary_brgy != "MULTI-BARANGAY" else active_list[0].barangay,
-        flood_gdf_utm=gdf_consolidated,
-        center_utm=center_utm,
-        radius_m=520.0,
+        total_structures=len(all_bldg_features),
+        low_depth_count=low_count,
+        medium_depth_count=med_count,
+        critical_depth_count=crit_count,
+        safe_count=safe_count,
+        low_area_sqm=round(float(low_union.area), 1) if not low_union.is_empty else 0.0,
+        medium_area_sqm=round(float(med_union.area), 1) if not med_union.is_empty else 0.0,
+        critical_area_sqm=round(float(crit_union.area), 1) if not crit_union.is_empty else 0.0,
+        affected_structures=affected_count,
+        affected_footprint_sqm=affected_footprint_sqm,
+        building_source="OSM rodriguez_buildings_enriched_v2.parquet",
+        affected_schools_count=schools_count,
+        affected_healthcare_count=health_count,
+        affected_civic_count=civic_count,
+        affected_evac_centers_count=len(compromised_evac_set),
+        affected_commercial_count=comm_count,
+        affected_religious_count=rel_count,
+        affected_residential_count=res_count,
+        compromised_evac_centers=sorted(list(compromised_evac_set)),
+        critical_infras=all_crit_infras[:30],
     )
-    inundated_summary = InundatedStructureSummary(**inundation_res["summary"])
-    inundated_summary.barangay = primary_brgy
+    buildings_geojson = {"type": "FeatureCollection", "features": all_bldg_features}
 
     raw_sum_structures = sum(int(inc.inundated_structures.affected_structures) for inc in active_list)
     consolidated_structures = int(inundated_summary.affected_structures)
@@ -1054,7 +1116,7 @@ def consolidate_flood_incidents(req: ConsolidateFloodRequest) -> ConsolidateFloo
         individual_outlines_geojson={"type": "FeatureCollection", "features": outline_features},
         intersection_zones_geojson={"type": "FeatureCollection", "features": intersection_features},
         camera_stations_geojson={"type": "FeatureCollection", "features": station_features},
-        buildings_geojson=inundation_res["buildings_geojson"],
+        buildings_geojson=buildings_geojson,
         routes_geojson={"type": "FeatureCollection", "features": route_features},
         severed_roads_geojson={"type": "FeatureCollection", "features": severed_features[:120]},
         area_advisory=advisory,
