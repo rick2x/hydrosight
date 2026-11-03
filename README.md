@@ -10,7 +10,7 @@ See [`SPEC.md`](SPEC.md) for the complete technical specification and mathematic
 
 - **100% Built During the Hackathon (Rule 4 Compliance):**
   - **Visual Perception & Geometric Sensor (`backend/meta_agents.py`):** Live Meta Model API integration with `sam-3.1` (`POST /v1/responses`) and `muse-spark-1.3` (`POST /v1/chat/completions`), pixel-rasterized submergence measurement (`_compute_mask_geometry`), explicit visual scene description & formula derivation (`scene_description` + `conclusion_summary`), EXIF GPS & compass bearing extraction (`extract_exif_geotag`), and an interactive `< 0.70` confidence self-check loop that re-prompts `sam-3.1` with fallback scale concepts (`"fence"`, `"utility pole"`, `"sidewalk curb"`).
-  - **3D Hydro-Spatial Physics & Routing Engine (`backend/geo_engine.py`):** `EPSG:32651` camera ray-casting, bilinear 10 m DEM sampling with local vertical uncertainty quadrature (`_dem_uncertainty_m`), 8-neighbor connected basin extraction, OpenStreetMap building inundation depth profiling, `NetworkX` road-edge severance routing, and zipped ESRI Shapefile (`.shp`, `.shx`, `.dbf`, `.prj`) generation.
+  - **3D Hydro-Spatial Physics & Routing Engine (`backend/geo_engine.py`):** `EPSG:32651` camera ray-casting, bilinear 5 m high-resolution DEM sampling with automated CRS normalization (`PRS92` / `ESRI:102457` to `EPSG:32651`), local vertical uncertainty quadrature (`_dem_uncertainty_m`), 8-neighbor connected basin extraction, OpenStreetMap building inundation depth profiling synchronized to the 5 m DTM, `NetworkX` road-edge severance routing, and zipped ESRI Shapefile (`.shp`, `.shx`, `.dbf`, `.prj`) generation.
   - **Admin Multi-Report Overlap Consolidation Engine (`backend/incidents_store.py`):** Spatial IoU & intersection graph clustering in `EPSG:32651`, 2D Inverse-Distance + SAM 3.1 confidence-weighted Water Surface Elevation (WSE) fusion, outlier discrepancy detection (`ΔWSE`), and de-duplicated municipal building and flood extent mapping.
   - **Interactive 3D Mission Control Frontend (`frontend/src/`):** Guided 3-step Operator Workbench (`PhotoInspector.jsx`, `MapViewcone.jsx`, `TriageMap.jsx`, `TriageCopilot.jsx`) with 4-phase live execution progress, printable MDRRMO Situation Report export (PDF), and `AdminDashboard.jsx` built with React, MapLibre GL 3D terrain/building extrusions, and `@turf/turf` live FOV viewcones.
 
@@ -24,7 +24,7 @@ See [`SPEC.md`](SPEC.md) for the complete technical specification and mathematic
    - Click **"Simulate `<0.70` Self-Check"** in the Step 1 toolbar to watch the agent autonomously re-prompt `sam-3.1` with fallback scale concepts (`fence`, `utility pole`, `sidewalk curb`) and recalibrate the depth gauge.
 2. **Step 2 · 3D Topographic Ray-Casting & Connected DEM Flood-Fill (`EPSG:32651`):**
    - Click **"Proceed to Step 2: 3D Mapping & Viewcone →"**.
-   - Drag the camera pin or rotate the 3D FOV frustum cone on the MapLibre 3D terrain map to sample the 10 m DEM, compute Water Surface Elevation ($\text{WSE} = Z_{\text{DEM}} + d_{\text{water}} \pm \sigma_{\text{DEM}}$), and color 3D OpenStreetMap building extrusions by flood depth tier.
+   - Drag the camera pin or rotate the 3D FOV frustum cone on the MapLibre 3D terrain map to sample the 5 m DEM, compute Water Surface Elevation ($\text{WSE} = Z_{\text{DEM}} + d_{\text{water}} \pm \sigma_{\text{DEM}}$), and color 3D OpenStreetMap building extrusions by flood depth tier.
 3. **Step 3 · Autonomous Spatial Commander & Printable Situation Report (`muse-spark-1.3` Tool-Calling):**
    - Click **"Trigger Autonomous Agent Triage"** (or **"Proceed to Step 3"**).
    - Watch the live 4-phase execution checklist as `muse-spark-1.3` executes `get_inundated_structures`, `list_evacuation_centers`, `compute_safe_rescue_route` (autonomously switching from `6x6 High-Water Rescue Truck` to `amphibious_rubber_boat` when road segments exceed `0.50 m` depth), and `generate_area_advisory`.
@@ -40,7 +40,7 @@ See [`SPEC.md`](SPEC.md) for the complete technical specification and mathematic
    - **`sam-3.1` (`POST /v1/responses`):** Open-vocabulary segmentation of `"water"` (displayed as `"floodwater"`), `"person"`, `"car"`, `"tricycle"`, `"gate"`, `"building entrance"`, and `"utility pole"`, parsing `<|box;...|>` and `<|polygon;...|>` detections. Rasterizes mask polygons (`_compute_mask_geometry`) to measure pixel-level object submergence ratios directly from mask overlap, with an automated confidence self-check (`< 0.70`) that re-prompts fallback scale concepts (`"fence"`, `"utility pole"`, `"sidewalk curb"`).
    - **`muse-spark-1.3` (`POST /v1/chat/completions`):** Multimodal vision-language reasoning (`response_format={"type": "json_object"}`) that grounds the primary submerged reference object, enforces `estimated_water_depth_m = reference_standard_height_m * submerged_ratio` via Pydantic validation, and estimates target ground distance (`estimated_distance_from_camera_m`).
 2. **3D Topographic Ray-Casting & Connected Basin Fill (`EPSG:32651`)**
-   - Projects the camera viewing ray $(\phi, \text{FOV}, u, d)$ onto the 10 m Copernicus GLO-30 DEM (`EPSG:32651`), anchors the local Water Surface Elevation ($\text{WSE} = Z_{\text{DEM}}(T) + d_{\text{water}}$) with its DEM uncertainty band (`dem_uncertainty_m`), and extracts the 8-neighbor connected basin polygon and OpenStreetMap building depths.
+   - Projects the camera viewing ray $(\phi, \text{FOV}, u, d)$ onto the 5 m bare-earth DEM (`EPSG:32651`), anchors the local Water Surface Elevation ($\text{WSE} = Z_{\text{DEM}}(T) + d_{\text{water}}$) with its DEM uncertainty band (`dem_uncertainty_m`), and extracts the 8-neighbor connected basin polygon and OpenStreetMap building depths.
 3. **Verifiable Autonomous Triage Agent & Road Severance (`muse-spark-1.3` Tool-Calling)**
    - Orchestrates a multi-turn function-calling loop (`get_inundated_structures`, `list_evacuation_centers`, `compute_safe_rescue_route`, `generate_area_advisory`). Clips flooded road edges where DEM depth exceeds the rescue vehicle's passable threshold (`0.50 m` for `6x6 High-Water Rescue Truck`, autonomous retry with `amphibious_rubber_boat` when primary routes are severed), rejects flooded evacuation centers, and synthesizes a general barangay-level advisory.
 4. **Admin Flood Registry & Overlapping Prediction Consolidation Engine**
@@ -67,7 +67,7 @@ hydrosight/
 │   ├── test_area_advisory.py                # Unit tests for general barangay advisory rules
 │   ├── test_photo_geotag.py                 # Unit tests for EXIF GPS & compass azimuth extraction
 │   ├── test_triage_buildings_consistency.py # Unit tests for DEM vs. building tier consistency
-│   └── data/                                # 10m DEM, OSM buildings parquet, road graph, evac centers & presets
+│   └── data/                                # 5m DEM (EPSG:32651), enriched OSM buildings parquet, road graph, evac centers & presets
 ├── frontend/
 │   ├── src/
 │   │   ├── App.jsx                          # Unified mission control state & Workbench / Admin mode switcher
@@ -96,7 +96,7 @@ hydrosight/
 ## Quickstart
 
 ### Option A: One-Line Docker Launch (Recommended for Hackathon Judges)
-Launch the entire full-stack application (compiled React + MapLibre 3D frontend + FastAPI geospatial backend + 10 m DEM & OSM assets) in a single command:
+Launch the entire full-stack application (compiled React + MapLibre 3D frontend + FastAPI geospatial backend + 5 m DEM & OSM assets) in a single command:
 
 ```bash
 docker compose up --build
@@ -151,7 +151,7 @@ npm run build
 ## Honest limitations
 
 - **One municipality, hard-coded.** All coordinates, scenarios, evacuation centers, and the CRS (`EPSG:32651`) are tuned for Rodriguez, Rizal. Other areas need a new DEM, road graph, building footprints, and scenario calibration.
-- **Elevation data is resampled, not surveyed.** The 10 m DEM is resampled from a 30 m source. The API returns a `dem_uncertainty_m` band with every projection. Depths are estimates for triage, not surveyed flood depths.
+- **High-resolution 5 m bare-earth DEM with automated CRS normalization.** The primary elevation raster (`rodriguez_dem.tif`) is a 5 m resolution bare-earth DTM in `EPSG:32651` (WGS84 UTM Zone 51N). The engine automatically normalizes Philippine PRS92 (`ESRI:102457`) rasters to prevent ~162 m datum shifts. Local DEM vertical uncertainty bands (`dem_uncertainty_m`, `wse_low_m`/`wse_high_m`) are returned with every projection because small click offsets on sloped streets can shift the planar WSE.
 - **Depth comes from a visible reference object.** Water depth is `standard height × submerged ratio` for a detected object (wheel, car, tricycle, person, gate). Photos with no usable reference object give weaker estimates, and low-confidence results trigger a re-prompt with fallback concepts.
 - **Fallbacks are labelled, not hidden.** With no `META_API_KEY`, or if the Meta API is unreachable, built-in scenarios use calibrated preset masks and gauges, and custom uploads may reuse them. Responses expose this via `fallback_used` and `execution_mode`. No hypothetical surge preview is generated; projections show only the measured depth with its DEM uncertainty band (`dem_uncertainty_m`, `wse_low_m`/`wse_high_m`, `flood_area_low_sqm`/`flood_area_high_sqm`).
 - **Routing is only as good as OpenStreetMap.** Safe routes clip road segments by modelled depth on the OSM graph. They do not see real-time closures, debris, currents, or traffic.

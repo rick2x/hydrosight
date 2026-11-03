@@ -14,7 +14,7 @@
 1. **Input:** An operator uploads a street flood photo (or loads the primary Kasiglahan Village demo scenario), places a Camera Pin (`lat, lon`) on the interactive map, and rotates a Field-of-View (FOV) camera frustum (`azimuth_deg`, `fov_deg`) down the street.
 2. **Visual Perception (`sam-3.1`):** Performs zero-shot promptable concept segmentation on the street photo to extract binary masks and bounding boxes for `"floodwater"` and submerged vertical scale reference objects (`"person"`, `"car"`, `"tricycle"`, `"gate"`, `"building entrance"`), with an automated or operator-triggered `< 0.70` confidence self-check loop that re-prompts `sam-3.1` using fallback scale concepts (`"fence"`, `"utility pole"`, `"sidewalk curb"`).
 3. **Visual Hydrological Gauging (`muse-spark-1.3`):** Analyzes the annotated image and rasterized SAM 3.1 masks to describe what is visible in the scene (`scene_description`), derive how the flood depth conclusion was reached (`conclusion_summary`: `reference_standard_height_m * submerged_ratio = estimated_water_depth_m`), and estimate forward distance from the camera (`estimated_distance_from_camera_m`) in strict JSON.
-4. **Raycast-to-DEM Physics Engine (`Python / Rasterio / GeoPandas`):** Projects the camera coordinate along the target ray bearing onto a local Digital Elevation Model (`rodriguez_srtmgl1_10m_utm51n.tif` in `EPSG:32651`), samples ground elevation ($Z_{DEM}$), computes Water Surface Elevation ($WSE = Z_{DEM} + h_w$), flood-fills the connected lowland catchment where $DEM \le WSE$, and vectorizes the result into downloadable `.shp` and `.geojson` files.
+4. **Raycast-to-DEM Physics Engine (`Python / Rasterio / GeoPandas`):** Projects the camera coordinate along the target ray bearing onto a local Digital Elevation Model (`rodriguez_dem.tif` at 5m resolution in `EPSG:32651`), samples ground elevation ($Z_{DEM}$), computes Water Surface Elevation ($WSE = Z_{DEM} + h_w$), flood-fills the connected lowland catchment where $DEM \le WSE$, and vectorizes the result into downloadable `.shp` and `.geojson` files.
 5. **Autonomous Triage & Routing (`muse-spark-1.3` Tool-Calling):** Uses multi-turn function-calling over an `OSMnx`/`NetworkX` road graph to verify dry evacuation centers, clip flooded road segments (`depth > 0.5m` for wheeled rescue trucks; autonomous retry with `amphibious_rubber_boat` when primary routes are severed), compute safe rescue routes, generate one general barangay flood advisory (what residents and responders should do; never a per-house rescue dispatch), and export a printable MDRRMO Situation Report (PDF).
 6. **Admin Flood Registry & Overlapping Prediction Consolidation (`backend/incidents_store.py`):** Groups spatially intersecting reports in `EPSG:32651`, reconciles overlapping WSE measurements via 2D Inverse-Distance + SAM 3.1 confidence weighting (`confidence_weighted`, `max_envelope`, or `highest_confidence`), flags high-variance WSE outliers, and evaluates OSM buildings once against the unified flood surface so structures are never double-counted.
 
@@ -27,7 +27,7 @@ rodriguez-flood-triage/
 ├── SPEC.md                            # This specification file for agent context
 ├── backend/
 │   ├── data/
-│   │   ├── rodriguez_dem.tif          # Local DEM raster (EPSG:32651 UTM Zone 51N)
+│   │   ├── rodriguez_dem.tif          # Local 5m bare-earth DEM raster (EPSG:32651 UTM Zone 51N)
 │   │   ├── rodriguez_roads.graphml    # Pre-downloaded OSMnx road network
 │   │   ├── rodriguez_buildings.parquet# Pre-downloaded OSM building footprints
 │   │   └── sample_photos/             # Pre-loaded Rodriguez street flood photos
@@ -87,9 +87,17 @@ pillow>=10.4.0
 
 ## 4. Mathematical & Geospatial Engine Specifications (`backend/geo_engine.py`)
 
-### 4.1 Coordinate Reference Systems (CRS)
+### 4.1 Coordinate Reference Systems (CRS) & Elevation Model
 - **Frontend UI / MapLibre GL:** `EPSG:4326` (WGS84 `lon, lat` in degrees)
 - **Backend Raster & Vector Math:** `EPSG:32651` (WGS84 / UTM Zone 51N in meters)
+- **Primary DEM Raster (`backend/data/rodriguez_dem.tif`):**
+  - **Grid Resolution:** High-resolution 5.0 m × 5.0 m cell size (25.0 m² per pixel).
+  - **Coverage Extent:** Municipality of Rodriguez (Montalban), Rizal (bounding box: ~`294979 E, 1624780 N` to `322759 E, 1647335 N` in `EPSG:32651`).
+  - **Automated CRS Normalization (`_normalize_dem_crs` in `backend/geo_engine.py`):**
+    Philippine government GIS datasets (e.g. NAMRIA IFSAR) are officially published in Philippine Reference System 1992 (`PRS_1992_UTM_Zone_51N` / `ESRI:102457` / `EPSG:31251`). In Rodriguez, the datum shift between PRS92 and WGS84 causes a systematic spatial offset of ~162.3 m (dx ≈ -147.2 m, dy ≈ +68.2 m).
+    The backend automatically inspects the DEM CRS on startup; if a non-`EPSG:32651` raster is provided, it reprojects the GeoTIFF in-place with bilinear resampling to `EPSG:32651`, preventing spatial misalignment with OpenStreetMap buildings, road networks, and satellite basemaps.
+  - **Synchronized Building Ground Elevations (`backend/data/rodriguez_buildings_enriched_v2.parquet`):**
+    All 83,115 OpenStreetMap building footprints have their bare-earth ground elevation (`ground_elev_m`) point-sampled directly from the active 5m DEM. This guarantees that physical flood depths ($WSE - Z_{DEM}$) remain mathematically consistent between the 2D flood extent polygon and 3D building inundation tiers (eliminating false "Dry" classifications inside the flood zone).
 
 ### 4.2 Governing Equations
 1. **Horizontal Ray Angle Offset ($\Delta \theta$):**
