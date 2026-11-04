@@ -9,9 +9,9 @@ See [`SPEC.md`](SPEC.md) for the complete technical specification and mathematic
 ## Meta AI Developer Hackathon Submission (Oct 26 – Nov 4, 2026)
 
 - **100% Built During the Hackathon (Rule 4 Compliance):**
-  - **Visual Perception & Geometric Sensor (`backend/meta_agents.py`):** Live Meta Model API integration with `sam-3.1` (`POST /v1/responses`) and `muse-spark-1.3` (`POST /v1/chat/completions`), pixel-rasterized submergence measurement (`_compute_mask_geometry`), explicit visual scene description & formula derivation (`scene_description` + `conclusion_summary`), EXIF GPS & compass bearing extraction (`extract_exif_geotag`), and an interactive `< 0.70` confidence self-check loop that re-prompts `sam-3.1` with fallback scale concepts (`"fence"`, `"utility pole"`, `"sidewalk curb"`).
-  - **3D Hydro-Spatial Physics & Routing Engine (`backend/geo_engine.py`):** `EPSG:32651` camera ray-casting, bilinear 5 m high-resolution DEM sampling with automated CRS normalization (`PRS92` / `ESRI:102457` to `EPSG:32651`), local vertical uncertainty quadrature (`_dem_uncertainty_m`), 8-neighbor connected basin extraction, OpenStreetMap building inundation depth profiling synchronized to the 5 m DTM, `NetworkX` road-edge severance routing, and zipped ESRI Shapefile (`.shp`, `.shx`, `.dbf`, `.prj`) generation.
-  - **Admin Multi-Report Overlap Consolidation Engine (`backend/incidents_store.py`):** Spatial IoU & intersection graph clustering in `EPSG:32651`, 2D Inverse-Distance + SAM 3.1 confidence-weighted Water Surface Elevation (WSE) fusion, outlier discrepancy detection (`ΔWSE`), and de-duplicated municipal building and flood extent mapping.
+  - **Visual Perception & Geometric Sensor (`backend/meta_agents.py`):** Live Meta Model API integration with `sam-3.1` (`POST /v1/responses`) and `muse-spark-1.3` (`POST /v1/chat/completions`), configurable API timeouts (`META_API_TIMEOUT`, default 60s) with clean timeout recovery, pixel-rasterized submergence measurement (`_compute_mask_geometry`), explicit visual scene description & formula derivation (`scene_description` + `conclusion_summary`), EXIF GPS & compass bearing extraction (`extract_exif_geotag`), and an interactive `< 0.70` confidence self-check loop that re-prompts `sam-3.1` with fallback scale concepts (`"fence"`, `"utility pole"`, `"sidewalk curb"`).
+  - **3D Hydro-Spatial Physics & Routing Engine (`backend/geo_engine.py`):** `EPSG:32651` camera ray-casting, bilinear 5 m high-resolution DEM sampling with automated CRS normalization (`PRS92` / `ESRI:102457` to `EPSG:32651`), local vertical uncertainty quadrature (`_dem_uncertainty_m`), 8-neighbor connected basin extraction, OpenStreetMap building inundation depth profiling synchronized to the 5 m DTM via point-sampled centroid ground elevations (`rodriguez_buildings_enriched_v2.parquet`, 83,115 footprints), `NetworkX` road-edge severance routing, and zipped ESRI Shapefile (`.shp`, `.shx`, `.dbf`, `.prj`) generation.
+  - **Admin Multi-Report Overlap Consolidation Engine (`backend/incidents_store.py`):** Spatial IoU & intersection graph clustering in `EPSG:32651`, multi-cluster elevation-aware building inundation (evaluating each catchment at its true reconciled WSE without elevation dilution), 2D Inverse-Distance + SAM 3.1 confidence-weighted Water Surface Elevation (WSE) fusion, outlier discrepancy detection (`ΔWSE`), and de-duplicated municipal building and flood extent mapping.
   - **Interactive 3D Mission Control Frontend (`frontend/src/`):** Guided 3-step Operator Workbench (`PhotoInspector.jsx`, `MapViewcone.jsx`, `TriageMap.jsx`, `TriageCopilot.jsx`) with 4-phase live execution progress, printable MDRRMO Situation Report export (PDF), and `AdminDashboard.jsx` built with React, MapLibre GL 3D terrain/building extrusions, and `@turf/turf` live FOV viewcones.
 
 ---
@@ -30,7 +30,7 @@ See [`SPEC.md`](SPEC.md) for the complete technical specification and mathematic
    - Watch the live 4-phase execution checklist as `muse-spark-1.3` executes `get_inundated_structures`, `list_evacuation_centers`, `compute_safe_rescue_route` (autonomously switching from `6x6 High-Water Rescue Truck` to `amphibious_rubber_boat` when road segments exceed `0.50 m` depth), and `generate_area_advisory`.
    - Click **"Export Situation Report (PDF)"** or **"Export Certified .SHP Package"**.
 4. **Admin & Overlap Consolidation Mode:**
-   - Click **"Admin & Overlap Consolidation"** in the top-right header (and click **"Seed Overlapping Demo Reports"** if empty) to inspect how intersecting field reports in `EPSG:32651` are fused via confidence-weighted WSE surface interpolation and outlier exclusion without double-counting buildings.
+   - Click **"Admin & Overlap Consolidation"** in the top-right header (and click **"Seed Overlapping Demo Reports"** if empty) to inspect how intersecting field reports in `EPSG:32651` are fused via streamlined Confidence-Weighted WSE surface interpolation and outlier exclusion, evaluating structures at true catchment WSE without elevation distortion or double-counting.
 
 ---
 
@@ -38,7 +38,8 @@ See [`SPEC.md`](SPEC.md) for the complete technical specification and mathematic
 
 1. **Zero-Shot Visual Water Gauge (`sam-3.1` + `muse-spark-1.3`)**
    - **`sam-3.1` (`POST /v1/responses`):** Open-vocabulary segmentation of `"water"` (displayed as `"floodwater"`), `"person"`, `"car"`, `"tricycle"`, `"gate"`, `"building entrance"`, and `"utility pole"`, parsing `<|box;...|>` and `<|polygon;...|>` detections. Rasterizes mask polygons (`_compute_mask_geometry`) to measure pixel-level object submergence ratios directly from mask overlap, with an automated confidence self-check (`< 0.70`) that re-prompts fallback scale concepts (`"fence"`, `"utility pole"`, `"sidewalk curb"`).
-   - **`muse-spark-1.3` (`POST /v1/chat/completions`):** Multimodal vision-language reasoning (`response_format={"type": "json_object"}`) that grounds the primary submerged reference object, enforces `estimated_water_depth_m = reference_standard_height_m * submerged_ratio` via Pydantic validation, and estimates target ground distance (`estimated_distance_from_camera_m`).
+   - **`muse-spark-1.3` (`POST /v1/chat/completions`):** Multimodal vision-language reasoning (`response_format={"type": "json_object"}`) that grounds the primary submerged reference object, enforces `estimated_water_depth_m = reference_standard_height_m * submerged_ratio` via Pydantic validation, and estimates target ground distance (`estimated_distance_from_camera_m`). Configured with `META_API_TIMEOUT` (default: 60s, connect: 15s) to guarantee ample headroom for reasoning token generation, with clean timeout warnings and calibrated fallback.
+   - **EXIF Geotagging & Compass Bearing:** Extracts raw camera coordinates and compass direction (`extract_exif_geotag`) for photo orientation (tested across multiple geotagged samples including `geotag_sample_image.jpg` and `geotag_sample_image2.jpg`).
 2. **3D Topographic Ray-Casting & Connected Basin Fill (`EPSG:32651`)**
    - Projects the camera viewing ray $(\phi, \text{FOV}, u, d)$ onto the 5 m bare-earth DEM (`EPSG:32651`), anchors the local Water Surface Elevation ($\text{WSE} = Z_{\text{DEM}}(T) + d_{\text{water}}$) with its DEM uncertainty band (`dem_uncertainty_m`), and extracts the 8-neighbor connected basin polygon and OpenStreetMap building depths.
 3. **Verifiable Autonomous Triage Agent & Road Severance (`muse-spark-1.3` Tool-Calling)**
@@ -46,7 +47,8 @@ See [`SPEC.md`](SPEC.md) for the complete technical specification and mathematic
 4. **Admin Flood Registry & Overlapping Prediction Consolidation Engine**
    - Persists all analyzed street photos and 3D flood predictions (`backend/incidents_store.py`) and resolves spatial overlaps when multiple field reports cover the same streets:
      - Computes pairwise polygon intersections ($\text{m}^2$), Intersection-over-Union (IoU), camera target separation, and $\Delta\text{WSE}$ in `EPSG:32651`.
-     - Reconciles overlapping Water Surface Elevations via **Confidence-Weighted DEM Surface** (2D inverse-distance + `sam-3.1` confidence / inverse DEM variance weighting), **Max Safety Envelope**, or **Highest AI Confidence**.
+     - Reconciles overlapping Water Surface Elevations via **Confidence-Weighted DEM Surface** (2D inverse-distance + `sam-3.1` confidence / inverse DEM variance weighting).
+     - Evaluates building inundations per-cluster at each catchment's true reconciled WSE, ensuring multi-basin consolidations (e.g. San Jose at WSE ~32.4m vs. Burgos at WSE ~20.5m) never dilute water levels or cause false "dry" classifications inside flooded areas.
      - Flags high-variance WSE outliers ($\Delta\text{WSE} > 0.45\text{ m}$ / combined DEM uncertainty band) for 1-click exclusion and evaluates OpenStreetMap buildings once against the unified flood surface so submerged structures are never double-counted.
 
 ---
@@ -101,7 +103,7 @@ Launch the entire full-stack application (compiled React + MapLibre 3D frontend 
 ```bash
 docker compose up --build
 ```
-*(Or with a live Meta AI API key inline: `META_API_KEY=your_key docker compose up --build`)*
+*(Or with live credentials inline: `META_API_KEY=your_key META_API_TIMEOUT=60.0 docker compose up --build`)*
 
 Once started, open:
 - **Web Application UI:** [http://localhost:8000](http://localhost:8000) *(also mirrored on [http://localhost:5173](http://localhost:5173))*

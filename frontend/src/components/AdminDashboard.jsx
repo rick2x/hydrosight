@@ -530,34 +530,24 @@ export default function AdminDashboard({
             borderTop: "1px solid var(--rule)",
           }}
         >
-          <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
             <span style={{ fontSize: "12px", fontWeight: 600, color: "var(--text)", display: "inline-flex", alignItems: "center", gap: "5px" }}>
               <Sliders size={13} color="var(--accent)" />
-              Overlapping WSE Reconciliation Strategy:
+              Overlapping WSE Reconciliation:
             </span>
-            <div className="segmented-bar" role="group" aria-label="Overlapping WSE reconciliation mode">
-              <button
-                type="button"
-                className={`segmented-btn ${reconciliationMode === "confidence_weighted" ? "active" : ""}`}
-                onClick={() => onChangeReconciliationMode("confidence_weighted")}
-              >
-                Confidence-Weighted Fusion (SAM 3.1 + IDW)
-              </button>
-              <button
-                type="button"
-                className={`segmented-btn ${reconciliationMode === "max_envelope" ? "active" : ""}`}
-                onClick={() => onChangeReconciliationMode("max_envelope")}
-              >
-                Max WSE Envelope (Worst-Case Safety)
-              </button>
-              <button
-                type="button"
-                className={`segmented-btn ${reconciliationMode === "highest_confidence" ? "active" : ""}`}
-                onClick={() => onChangeReconciliationMode("highest_confidence")}
-              >
-                Highest-Confidence Gauge Winner
-              </button>
-            </div>
+            <span
+              style={{
+                fontSize: "12px",
+                fontWeight: 600,
+                color: "var(--accent)",
+                background: "var(--surface)",
+                border: "1px solid var(--rule)",
+                borderRadius: "6px",
+                padding: "3px 9px",
+              }}
+            >
+              Confidence-Weighted Fusion (SAM 3.1 + IDW)
+            </span>
           </div>
 
           {incidents.length > 0 && (
