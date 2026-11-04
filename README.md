@@ -7,7 +7,7 @@ See [`SPEC.md`](SPEC.md) for the complete technical specification and mathematic
 [![Watch Demo Video](https://img.shields.io/badge/YouTube-Watch%20Demo%20Video-FF0000?style=for-the-badge&logo=youtube&logoColor=white)](https://www.youtube.com/watch?v=US3jReaMoNA)
 [![Meta AI Hackathon](https://img.shields.io/badge/Meta%20AI-Developer%20Hackathon%202026-0081FB?style=for-the-badge&logo=meta&logoColor=white)](https://www.youtube.com/watch?v=US3jReaMoNA)
 
-> 📺 **Demo Walkthrough Video:** [https://www.youtube.com/watch?v=r6bJpTnVikQ](https://www.youtube.com/watch?v=r6bJpTnVikQ)
+> 📺 **Demo Walkthrough Video:** [https://www.youtube.com/watch?v=US3jReaMoNA](https://www.youtube.com/watch?v=US3jReaMoNA)
 
 ---
 
