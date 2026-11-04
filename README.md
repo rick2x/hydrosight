@@ -11,7 +11,7 @@ See [`SPEC.md`](SPEC.md) for the complete technical specification and mathematic
 
 ---
 
-## Meta AI Developer Hackathon Submission (Oct 26 – Nov 4, 2026)
+## Meta AI Developer Hackathon Submission (Oct 27 – Nov 4, 2026)
 
 > **Note:** All code was written during the hackathon period.
 
